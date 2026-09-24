@@ -100,6 +100,26 @@ def validar_nome(nome: str):
     return None
 
 
+_INVALIDOS_NT = set('<>:"|?*')
+_RESERVADOS_NT = {"CON", "PRN", "AUX", "NUL", *(f"COM{i}" for i in range(1, 10)),
+                  *(f"LPT{i}" for i in range(1, 10))}
+
+
+def nome_local_invalido(nome: str, sistema: str | None = None):
+    """Motivo pelo qual `nome` não pode virar arquivo neste computador, ou None se puder."""
+    erro = validar_nome(nome)
+    if erro:
+        return erro
+    if (sistema or os.name) == "nt":
+        if any(ch in _INVALIDOS_NT or ord(ch) < 0x20 for ch in nome):
+            return "O nome tem caracteres que o Windows não aceita."
+        if nome.endswith((".", " ")):
+            return "O Windows não aceita nomes que terminam em ponto ou espaço."
+        if nome.split(".")[0].rstrip(" ").upper() in _RESERVADOS_NT:
+            return "Nome reservado do Windows."
+    return None
+
+
 def _normalizar(caminho: str) -> str:
     """normpath que colapsa barras iniciais (POSIX mantém '//' como está, mas no Linux é igual a '/')."""
     c = posixpath.normpath(caminho)
@@ -255,8 +275,22 @@ def enviar_itens(sftp, locais: list[str], destino_dir: str, resolver, progresso=
 
 
 def _exigir_nome_valido(nome):
-    if validar_nome(nome):
+    if nome_local_invalido(nome):
         raise OperacaoRecusada(f"Nome inválido no PC remoto: {nome!r}")
+
+
+def _destino_contido(pasta: str, nome: str) -> str:
+    """Caminho local de `nome` dentro de `pasta`; recusa se sair dela (qualquer sistema)."""
+    _exigir_nome_valido(nome)
+    base = os.path.abspath(pasta)
+    destino = os.path.abspath(os.path.join(base, nome))
+    try:
+        dentro = os.path.commonpath([base, destino]) == base and destino != base
+    except ValueError:      # unidades diferentes
+        dentro = False
+    if not dentro:
+        raise OperacaoRecusada(f"Nome inválido no PC remoto: {nome!r}")
+    return destino
 
 
 def _baixar_um(sftp, remoto, eh_pasta, destino, resolver):
@@ -265,12 +299,12 @@ def _baixar_um(sftp, remoto, eh_pasta, destino, resolver):
             raise FileExistsError(f"'{destino}' já existe neste computador e não é uma pasta.")
         os.makedirs(destino, exist_ok=True)
         for a in sftp.listdir_attr(remoto):
-            _exigir_nome_valido(a.filename)
+            filho = _destino_contido(destino, a.filename)
             modo = a.st_mode or 0
             if not (stat.S_ISDIR(modo) or stat.S_ISREG(modo)):
                 continue
             _baixar_um(sftp, posixpath.join(remoto, a.filename), stat.S_ISDIR(modo),
-                       os.path.join(destino, a.filename), resolver)
+                       filho, resolver)
     else:
         if os.path.exists(destino):
             if os.path.isdir(destino):
@@ -284,9 +318,8 @@ def _baixar_um(sftp, remoto, eh_pasta, destino, resolver):
 
 
 def baixar_itens(sftp, entradas: list[Entrada], destino_dir: str, resolver, progresso=None) -> None:
-    for e in entradas:
-        _exigir_nome_valido(e.nome)
-    for i, e in enumerate(entradas, 1):
+    destinos = [_destino_contido(destino_dir, e.nome) for e in entradas]     # tudo validado antes de baixar
+    for i, (e, destino) in enumerate(zip(entradas, destinos), 1):
         if progresso:
             progresso(i, len(entradas), e.nome)
-        _baixar_um(sftp, e.caminho, e.eh_pasta, os.path.join(destino_dir, e.nome), resolver)
+        _baixar_um(sftp, e.caminho, e.eh_pasta, destino, resolver)

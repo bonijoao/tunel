@@ -397,7 +397,7 @@ class _SftpNomesRuins(FakeSftp):
         return saida
 
 
-@pytest.mark.parametrize("nome", ["..", "..\evil", "a\x00b", "../x"])
+@pytest.mark.parametrize("nome", ["..", ".." + chr(92) + "evil", "a\x00b", "../x"])
 def test_baixar_recusa_nome_remoto_interno_invalido(tmp_path, nome):
     destino = tmp_path / "saida"
     destino.mkdir()
@@ -418,3 +418,71 @@ def test_baixar_recusa_nome_de_entrada_de_topo_invalido(tmp_path):
         arquivos.baixar_itens(s, [Entrada("../x", "/r/x", False)], str(destino), _resolver("substituir"))
     assert not (tmp_path / "x").exists()
     assert list(destino.iterdir()) == []
+
+
+# ---------- nomes locais inválidos (Windows) e contenção
+@pytest.mark.parametrize("nome", ["C:..", "D:x", "a:b", "x.txt:oculto", "CON", "con.txt", "aux", "a.", "a ",
+                                  "a<b", "a>b", 'a"b', "a|b", "a?b", "a*b", "a\x01b", "NUL.tar.gz", "com1", "LPT9.x"])
+def test_nome_local_invalido_no_windows(nome):
+    assert arquivos.nome_local_invalido(nome, sistema="nt")
+
+
+@pytest.mark.parametrize("nome", ["relatório final.txt", "a'b", "console.txt", "com10", "a.b", "x y"])
+def test_nome_local_valido_no_windows(nome):
+    assert arquivos.nome_local_invalido(nome, sistema="nt") is None
+
+
+@pytest.mark.parametrize("nome", ["C:..", "a:b", "CON", "a.", "a<b", "x.txt:oculto"])
+def test_dois_pontos_e_afins_sao_permitidos_no_posix(nome):
+    assert arquivos.nome_local_invalido(nome, sistema="posix") is None
+
+
+@pytest.mark.parametrize("nome", ["..", "a/b", "a" + chr(92) + "b", ""])
+def test_regras_gerais_valem_em_qualquer_sistema(nome):
+    assert arquivos.nome_local_invalido(nome, sistema="posix")
+    assert arquivos.nome_local_invalido(nome, sistema="nt")
+
+
+@pytest.mark.skipif(os.name != "nt", reason="unidade/ADS só existem no Windows")
+@pytest.mark.parametrize("nome", ["C:..", "D:x", "relatorio.txt:oculto"])
+def test_baixar_recusa_nome_com_unidade_no_windows(tmp_path, nome):
+    destino = tmp_path / "saida"
+    destino.mkdir()
+    antes = sorted(p.name for p in tmp_path.iterdir())
+    s = FakeSftp()
+    s.arquivo("/r/" + nome + "/ESCAPOU.txt", b"x")
+    with pytest.raises(OperacaoRecusada, match="Nome inválido"):
+        arquivos.baixar_itens(s, [Entrada(nome, "/r/" + nome, True)], str(destino), _resolver("substituir"))
+    assert sorted(p.name for p in tmp_path.iterdir()) == antes
+    assert list(destino.iterdir()) == []
+
+
+def test_contencao_recusa_destino_fora_da_pasta_em_qualquer_sistema(tmp_path):
+    destino = tmp_path / "saida"
+    destino.mkdir()
+    for nome in ("..", "../x", "a/../../b"):
+        with pytest.raises(OperacaoRecusada, match="Nome inválido"):
+            arquivos._destino_contido(str(destino), nome)
+    assert arquivos._destino_contido(str(destino), "ok.txt") == str(destino / "ok.txt")
+
+
+def test_contencao_vale_mesmo_se_a_regra_de_nomes_falhar(tmp_path, monkeypatch):
+    """Segunda barreira: mesmo que nome_local_invalido deixasse passar, o destino tem de ficar dentro."""
+    monkeypatch.setattr(arquivos, "nome_local_invalido", lambda nome, sistema=None: None)
+    destino = tmp_path / "saida"
+    destino.mkdir()
+    s = _SftpNomesRuins(["../fugiu.txt"])
+    s.arquivo("/r/proj/fugiu.txt", b"x")
+    with pytest.raises(OperacaoRecusada, match="Nome inválido"):
+        arquivos.baixar_itens(s, [Entrada("proj", "/r/proj", True)], str(destino), _resolver("substituir"))
+    assert not (tmp_path / "fugiu.txt").exists() and not (destino / "fugiu.txt").exists()
+    with pytest.raises(OperacaoRecusada):
+        arquivos.baixar_itens(s, [Entrada("..", "/r", True)], str(destino), _resolver("substituir"))
+
+
+def test_contencao_unidades_diferentes_recusa(monkeypatch, tmp_path):
+    def levanta(_):
+        raise ValueError("unidades diferentes")
+    monkeypatch.setattr(arquivos.os.path, "commonpath", levanta)
+    with pytest.raises(OperacaoRecusada):
+        arquivos._destino_contido(str(tmp_path), "x")
