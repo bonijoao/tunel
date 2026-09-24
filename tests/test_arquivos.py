@@ -234,6 +234,16 @@ def test_apagar_recusa_se_normalize_falha(quebra):
 
 
 # ---------- política de conflito
+def test_politica_registra_quando_pulou():
+    p = PoliticaConflito(lambda c: ("pular", False))
+    assert p.pulou is False
+    p("/x")
+    assert p.pulou is True
+    q = PoliticaConflito(lambda c: ("substituir", True))
+    q("/x")
+    assert q.pulou is False
+
+
 def test_politica_de_conflito_aplica_a_todos_e_cancelar_nao_grava():
     perguntas = []
 

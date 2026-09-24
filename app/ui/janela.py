@@ -326,6 +326,9 @@ class JanelaPrincipal:
         def tarefa():
             if enviar_antes:
                 arquivos.enviar_itens(sessao.sftp(), [enviar_antes[0]], enviar_antes[1], politica)
+                if politica.pulou:
+                    self.log.linha("O script já existia no PC remoto e NÃO foi substituído; "
+                                   "rodando a versão que já estava lá.")
             self.log.linha(f"$ {cmd}")
             codigo = ssh.executar(sessao.obter(), cmd, self.log.escrever)
             return atual, arquivos.listar_remoto(sessao.sftp(), atual), codigo

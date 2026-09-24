@@ -29,8 +29,15 @@ class PoliticaConflito:
     def __init__(self, perguntar: Callable[[str], tuple]):
         self._perguntar = perguntar
         self._padrao = None
+        self.pulou = False      # True se algum arquivo foi mantido (não substituído)
 
     def __call__(self, caminho: str) -> str:
+        acao = self._decidir(caminho)
+        if acao == "pular":
+            self.pulou = True
+        return acao
+
+    def _decidir(self, caminho: str) -> str:
         if self._padrao:
             return self._padrao
         acao, todos = self._perguntar(caminho)

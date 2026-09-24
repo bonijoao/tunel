@@ -367,3 +367,21 @@ def test_operacoes_durante_a_conexao_sao_recusadas(ambiente, tmp_path):
     ocioso(j)
     assert sftp.caminhos() == antes
     assert comandos == []
+
+
+def test_enviar_e_rodar_avisa_quando_pular_mantem_o_script_antigo(ambiente, tmp_path, monkeypatch):
+    from app.ui import dialogos
+    j, fake, comandos, respostas = ambiente
+    monkeypatch.setattr(dialogos, "perguntar_conflito", lambda *a, **k: ("pular", False))
+    conectar(j)
+    origem = tmp_path / "origem"
+    origem.mkdir()
+    (origem / "x.py").write_text("print(2)")
+    j._pedir_local(str(origem))
+    ocioso(j)
+    selecionar(j.local, ["x.py"])
+    j.enviar_e_rodar()
+    esperar(j, lambda: "[terminou com código 0]" in texto(j))
+    assert "O script já existia no PC remoto e NÃO foi substituído; rodando a versão que já estava lá." in texto(j)
+    assert fake._sftp.conteudo(PASTA + "/x.py") == b"print(1)"
+    assert comandos == [f"cd {PASTA} && python3 ./x.py"]
