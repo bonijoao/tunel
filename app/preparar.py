@@ -29,7 +29,7 @@ fi
 "$D/tailscale" --socket="$D/tailscaled.sock" up --auth-key={shlex.quote(auth_key)} --hostname={shlex.quote(hostname)}
 B=$(printf %s "$D" | base64 | tr -d '\\n')
 LINHA='@reboot D=$(echo '"$B"' | base64 -d); nohup setsid "$D/tailscaled" --tun=userspace-networking --state="$D/state/tailscaled.state" --socket="$D/tailscaled.sock" >> "$D/tailscaled.log" 2>&1 < /dev/null &'
-( crontab -l 2>/dev/null | grep -v 'tailscaled --tun=userspace' ; echo "$LINHA" ) | crontab -
+( crontab -l 2>/dev/null | grep -v -- '--tun=userspace-networking' ; echo "$LINHA" ) | crontab -
 "$D/tailscale" --socket="$D/tailscaled.sock" status
 "$D/tailscale" --socket="$D/tailscaled.sock" ip -4
 """

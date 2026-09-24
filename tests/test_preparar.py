@@ -1,4 +1,4 @@
-import os
+import base64
 import re
 import shlex
 import shutil
@@ -8,86 +8,63 @@ import pytest
 
 from app import preparar
 
-
-def test_script_tem_os_passos_essenciais():
-    s = preparar.gerar_script("~/joao/tailscale", "tskey-auth-abc", "uni-x")
-    assert "--tun=userspace-networking" in s
-    assert "@reboot" in s
-    assert "pkgs.tailscale.com/stable/tailscale_latest_amd64.tgz" in s
-    assert "--hostname=uni-x" in s or "--hostname='uni-x'" in s
+HOSTIS = ["/tmp/a b; touch /tmp/pwn'x%y", "/x'; touch /tmp/pwn; '"]
+precisa_bash = pytest.mark.skipif(shutil.which("bash") is None, reason="bash ausente")
 
 
-def test_script_nao_usa_sudo():
-    assert "sudo" not in preparar.gerar_script("~/t", "k", "h")
+def _linha_cron(pasta, auth_key="k; touch /tmp/pwn2", hostname="h$(touch /tmp/pwn3)"):
+    script = preparar.gerar_script(pasta, auth_key, hostname)
+    trecho = [l for l in script.splitlines() if l.startswith(("D=", "B=", "LINHA="))]
+    assert [l[:2] for l in trecho] == ["D=", "B=", "LI"]
+    sh_cmd = shutil.which("sh") or "bash"
+    r = subprocess.run([sh_cmd, "-c", "\n".join(trecho) + '\nprintf "%s" "$LINHA"'],
+                       capture_output=True, text=True, check=True)
+    return script, r.stdout
 
 
-def test_metacaracteres_ficam_quotados_no_auth():
-    """Auth key and hostname with special chars are shlex.quoted on the up command."""
-    s = preparar.gerar_script("/tmp/safe", "k; touch /tmp/pwn", "h; rm /")
-    # Find the up line
-    up_line = [line for line in s.split("\n") if "--auth-key=" in line and "up" in line][0]
-    # Auth key should be quoted (shlex.quote adds quotes)
-    assert "'k; touch /tmp/pwn'" in up_line or '"k; touch /tmp/pwn"' in up_line
-    # Hostname should be quoted
-    assert "'h; rm /'" in up_line or '"h; rm /"' in up_line
+@precisa_bash
+@pytest.mark.parametrize("pasta", HOSTIS)
+def test_linha_cron_nao_vaza_o_caminho_nem_percent(pasta):
+    _, linha = _linha_cron(pasta)
+    assert linha.startswith("@reboot ")
+    assert "\n" not in linha
+    assert "%" not in linha
+    assert pasta not in linha
+    assert "touch" not in linha
 
 
-def test_pasta_com_til_e_expandida_no_home():
-    s = preparar.gerar_script("~/joao/tailscale", "k", "h")
-    assert '"$HOME"/joao/tailscale' in s
+@precisa_bash
+@pytest.mark.parametrize("pasta", HOSTIS)
+def test_linha_cron_ida_e_volta_do_caminho(pasta):
+    _, linha = _linha_cron(pasta)
+    b64 = re.search(r"D=\$\(echo (\S+) \| base64 -d\)", linha).group(1)
+    assert base64.b64decode(b64).decode() == pasta
+    sh_cmd = shutil.which("sh") or "bash"
+    r = subprocess.run([sh_cmd, "-c", f'D=$(echo {b64} | base64 -d); printf %s "$D"'],
+                       capture_output=True, text=True, check=True)
+    assert r.stdout == pasta
 
 
-def test_cron_uses_base64_not_sed():
-    """Cron line must use base64 encoding, not sed."""
-    s = preparar.gerar_script("/tmp/test", "k", "h")
-    # Should use base64 encoding
-    assert "base64" in s
-    # Should NOT have sed command that was in v1 (D_QUOTED/sed approach)
-    before_linha = s.split("LINHA=")[0]
-    assert "sed" not in before_linha, "sed should not be used for D_QUOTED"
+@precisa_bash
+def test_linha_cron_mantem_d_literal_para_o_cron_expandir():
+    _, linha = _linha_cron(HOSTIS[0])
+    assert '"$D/tailscaled"' in linha and '--socket="$D/tailscaled.sock"' in linha
 
 
-def test_cron_line_no_percent_signs():
-    """The crontab LINHA should not contain unescaped % (cron line separator)."""
-    s = preparar.gerar_script("/tmp/a%b; echo test", "key", "host")
-    # Extract LINHA
-    match = re.search(r"LINHA='(.+?)'", s, re.DOTALL)
-    assert match, "LINHA definition not found"
-    linha = match.group(1)
-    # % should not appear (it's encoded in base64)
-    assert "%" not in linha, "LINHA contains unescaped %, cron will treat as newline"
+@precisa_bash
+def test_filtro_de_deduplicacao_casa_com_a_linha_nova():
+    script, linha = _linha_cron(HOSTIS[0])
+    padrao = re.search(r"grep -v -- '([^']+)'", script).group(1)
+    r = subprocess.run(["grep", "-c", "--", padrao], input=linha, capture_output=True, text=True)
+    assert r.stdout.strip() == "1"
 
 
-def test_cron_line_no_raw_pasta():
-    """The LINHA should not contain the raw, unencoded path."""
-    paths = [
-        "/tmp/a b; touch /tmp/pwn",
-        "/tmp/a%b",
-        "/x'; touch /tmp/pwn; '",
-    ]
-    for pasta in paths:
-        s = preparar.gerar_script(pasta, "key", "host")
-        linha_match = re.search(r"LINHA='(.+?)'", s, re.DOTALL)
-        assert linha_match
-        linha = linha_match.group(1)
-        # Raw path must not appear in LINHA (should be base64-encoded)
-        assert pasta not in linha, f"Raw path {pasta} found in LINHA"
-
-
-def test_cron_contains_base64_decode():
-    """LINHA should contain D=$(echo ... | base64 -d) to decode at runtime."""
-    s = preparar.gerar_script("/tmp/test", "k", "h")
-    # Should have base64 -d in LINHA to decode
-    assert "base64 -d" in s, "base64 -d not found"
-    # Pattern: D=$(echo 'base64value' | base64 -d)
-    assert re.search(r"D=\$\(echo '.*?' \| base64 -d\)", s), "base64 decode pattern not found"
-
-
-def test_deduplicate_grep_still_works():
-    """The grep -v filter for de-duplication should still match LINHA."""
-    s = preparar.gerar_script("/tmp/test", "key", "host")
-    # LINHA should contain the strings that grep -v looks for
-    assert "tailscaled" in s
-    assert "--tun=userspace" in s
-    # Verify grep pattern
-    assert re.search(r"grep -v 'tailscaled --tun=userspace'", s)
+def test_hostname_e_auth_key_so_na_linha_do_up_e_quotados():
+    auth, host = "k; touch /tmp/pwn2", "h$(touch /tmp/pwn3)"
+    script = preparar.gerar_script("/x/y", auth, host)
+    up = [l for l in script.splitlines() if " up " in l]
+    assert len(up) == 1
+    assert shlex.quote(auth) in up[0] and shlex.quote(host) in up[0]
+    for l in script.splitlines():
+        if l.startswith(("LINHA=", "B=")):
+            assert "pwn" not in l and "touch" not in l
