@@ -1,3 +1,4 @@
+import threading
 import tkinter as tk
 
 import pytest
@@ -19,10 +20,12 @@ class FakeSessao:
         self._sftp.arquivo(PASTA + "/pasta com espaço/dentro.txt", b"z")
         self.falhar = False
         self.falhar_home = False
+        self.trava = None          # Event: faz conectar() esperar até ser liberado
         self.fechada = False
 
     def conectar(self):
-        pass
+        if self.trava is not None:
+            self.trava.wait(8)
 
     def conectado(self):
         return True
@@ -262,3 +265,105 @@ def test_apagar_sem_conseguir_descobrir_a_home_e_recusado(ambiente):
     ocioso(j)
     assert sftp.caminhos() == antes
     assert "ERRO:" in texto(j)
+
+
+# ---------- ciclo de vida da conexão
+class _Transporte:
+    def __init__(self):
+        self.ativo = True
+
+    def is_active(self):
+        return self.ativo
+
+
+class _Cli:
+    def __init__(self, sftp):
+        self.transporte, self._sftp, self.fechado = _Transporte(), sftp, False
+
+    def get_transport(self):
+        return self.transporte
+
+    def open_sftp(self):
+        return self._sftp
+
+    def close(self):
+        self.fechado = True
+
+
+def test_conectar_e_desconectar_logo_em_seguida_nao_reaplica_o_estado(ambiente):
+    j, fake, comandos, respostas = ambiente
+    fake.trava = threading.Event()
+    j.conectar()
+    j.desconectar()
+    fake.trava.set()
+    ocioso(j)
+    assert j.sessao is None
+    assert j.barra.estado.get() == "Desconectado"
+    assert str(j.barra.botao_conectar.cget("state")) == "normal"
+    assert j.remoto.caminho_atual() == ""
+    assert "Conectado." not in texto(j)
+
+
+def test_conexao_que_falha_nao_abre_segunda_conexao_para_operacao_enfileirada(ambiente, monkeypatch):
+    from app.ui import janela
+    from app.sessao import Sessao
+    j, fake, comandos, respostas = ambiente
+    chamadas = []
+
+    def abrir():
+        chamadas.append(1)
+        raise TimeoutError("fora")
+    monkeypatch.setattr(janela, "Sessao", lambda a: Sessao(abrir))
+    j.conectar()
+    j._listar_remoto("~")           # operação enfileirada atrás da conexão que vai falhar
+    ocioso(j)
+    assert len(chamadas) == 1
+    assert j.sessao is None and j.barra.estado.get() == "Desconectado"
+    assert "ERRO:" in texto(j)
+
+
+def test_transporte_caido_e_reconexao_que_falha_volta_a_desconectado(ambiente, monkeypatch):
+    from app.ui import janela
+    from app.sessao import Sessao
+    j, fake, comandos, respostas = ambiente
+    clis = []
+
+    def abrir():
+        if clis:
+            raise TimeoutError("fora")
+        clis.append(_Cli(fake._sftp))
+        return clis[0]
+    monkeypatch.setattr(janela, "Sessao", lambda a: Sessao(abrir))
+    conectar(j)
+    clis[0].transporte.ativo = False
+    j._atualizar_remoto()
+    esperar(j, lambda: j.sessao is None)
+    ocioso(j)
+    assert j.barra.estado.get() == "Desconectado"
+    assert j.remoto.caminho_atual() == ""
+    assert "Conexão perdida. Clique em Conectar." in texto(j)
+    assert "Não consegui alcançar o PC" in texto(j)
+    assert str(j.barra.botao_conectar.cget("state")) == "normal"
+
+
+def test_operacoes_durante_a_conexao_sao_recusadas(ambiente, tmp_path):
+    j, fake, comandos, respostas = ambiente
+    sftp = fake._sftp
+    origem = tmp_path / "origem"
+    origem.mkdir()
+    (origem / "a.txt").write_text("um")
+    j._pedir_local(str(origem))
+    selecionar(j.local, ["a.txt"])
+    antes = sftp.caminhos()
+    fake.trava = threading.Event()
+    j.conectar()                       # sessao definida, mas o painel remoto ainda está vazio
+    assert j.remoto.caminho_atual() == ""
+    for acao in (j.enviar, j.nova_pasta, j.mover_para, j.enviar_e_rodar,
+                 lambda: j._ao_soltar_do_sistema([str(origem / "a.txt")])):
+        acao()
+    esperar(j, lambda: texto(j).count("Aguarde a conexão terminar.") == 5)
+    fake.trava.set()
+    esperar(j, lambda: "Conectado:" in j.barra.estado.get())
+    ocioso(j)
+    assert sftp.caminhos() == antes
+    assert comandos == []

@@ -120,21 +120,21 @@ class JanelaPrincipal:
                 self.log.linha(f"Aviso: não consegui abrir '{pasta}'; abrindo a pasta pessoal.")
                 pasta = home
                 itens = arquivos.listar_remoto(sftp, pasta)
-            self._pasta_perfil = pasta
             return pasta, itens
 
         def pronto(resultado):
+            self._pasta_perfil = resultado[0]
             self.remoto.mostrar(*resultado)
             self.barra.marcar_conectado(f"{perfil.login}@{perfil.host}")
             self.log.linha("Conectado.")
 
         def falhou(mensagem):
             self.log.linha_erro(mensagem)
-            if self.sessao is sessao:
-                self.sessao = None
-                self.barra.marcar_conectado(None)
+            self.sessao = None
+            self.perfil_conectado = None
+            self.barra.marcar_conectado(None)
 
-        self.fila.enfileirar(tarefa, pronto, falhou)
+        self.fila.enfileirar(tarefa, self._se_atual(sessao, pronto), self._se_atual(sessao, falhou))
 
     def desconectar(self):
         if self.sessao is not None:
@@ -184,20 +184,48 @@ class JanelaPrincipal:
             destino = arquivos.expandir_remoto(caminho, sessao.home())
             return destino, arquivos.listar_remoto(sessao.sftp(), destino)
 
-        self.fila.enfileirar(tarefa, lambda r: self.remoto.mostrar(*r), self.log.linha_erro)
+        self.fila.enfileirar(tarefa, self._se_atual(sessao, lambda r: self.remoto.mostrar(*r)),
+                             self._erro_de(sessao, recarregar=False))
 
-    def _depois_remoto(self, mensagem):
+    def _se_atual(self, sessao, callback):
+        """Só deixa o callback mexer na janela se `sessao` ainda for a conexão atual."""
+        def _f(arg):
+            if self.sessao is sessao:
+                callback(arg)
+        return _f
+
+    def _depois_remoto(self, mensagem, sessao):
         def _f(resultado):
             pasta, itens = resultado
             self.log.linha(mensagem)
             if self.remoto.caminho_atual() == pasta:
                 self.remoto.mostrar(pasta, itens)
-        return _f
+        return self._se_atual(sessao, _f)
 
-    def _erro_remoto(self, mensagem):
-        self.log.linha_erro(mensagem)
-        if self.sessao is not None and self.remoto.caminho_atual():
-            self._listar_remoto(self.remoto.caminho_atual())
+    def _erro_de(self, sessao, recarregar=True):
+        """Callback de erro de uma operação da conexão `sessao`; se a conexão caiu, volta a Desconectado."""
+        def _f(mensagem):
+            self.log.linha_erro(mensagem)
+            if not sessao.conectado():
+                self._perdeu_conexao(sessao)
+            elif recarregar and self.remoto.caminho_atual():
+                self._listar_remoto(self.remoto.caminho_atual())
+        return self._se_atual(sessao, _f)
+
+    def _perdeu_conexao(self, sessao):
+        self.sessao = None
+        self.perfil_conectado = None
+        self._pasta_perfil = None
+        self.fila.enfileirar(sessao.fechar)
+        self.remoto.limpar()
+        self.barra.marcar_conectado(None)
+        self.log.linha("Conexão perdida. Clique em Conectar.")
+
+    def _remoto_pronto(self):
+        if not self.remoto.caminho_atual():
+            self.log.linha("Aguarde a conexão terminar.")
+            return False
+        return True
 
     def _politica(self):
         return PoliticaConflito(lambda caminho: dialogos.na_thread_principal(
@@ -208,7 +236,7 @@ class JanelaPrincipal:
         self._enviar([e.caminho for e in self.local.selecionados()], self.remoto.caminho_atual())
 
     def _enviar(self, locais, destino):
-        if not self.conectado():
+        if not self.conectado() or not self._remoto_pronto():
             return
         if not locais:
             self.log.linha("Selecione arquivos ou pastas no painel Local.")
@@ -219,8 +247,8 @@ class JanelaPrincipal:
             arquivos.enviar_itens(sessao.sftp(), locais, destino, politica, self.log.definir_progresso)
             return destino, arquivos.listar_remoto(sessao.sftp(), destino)
 
-        self.fila.enfileirar(tarefa, self._depois_remoto(f"Enviado(s): {len(locais)} item(ns)."),
-                             self._erro_remoto)
+        self.fila.enfileirar(tarefa, self._depois_remoto(f"Enviado(s): {len(locais)} item(ns).", sessao),
+                             self._erro_de(sessao))
 
     def baixar(self):
         self._baixar(self.remoto.selecionados(), self.local.caminho_atual())
@@ -242,11 +270,13 @@ class JanelaPrincipal:
             if self.local.caminho_atual() == pasta:
                 self._pedir_local(pasta)
 
-        self.fila.enfileirar(tarefa, pronto, self.log.linha_erro)
+        self.fila.enfileirar(tarefa, self._se_atual(sessao, pronto), self._erro_de(sessao, recarregar=False))
 
     def _ao_soltar_do_sistema(self, caminhos):
         if self.sessao is None:
             self.log.linha("Conecte-se primeiro para enviar arquivos arrastados.")
+            return
+        if not self._remoto_pronto():
             return
         self._enviar(caminhos, self.remoto.caminho_atual())
 
@@ -276,7 +306,7 @@ class JanelaPrincipal:
         if len(sel) != 1 or sel[0].eh_pasta:
             self.log.linha("Selecione UM script (.R ou .py) no painel Local.")
             return
-        if not self.conectado():
+        if not self.conectado() or not self._remoto_pronto():
             return
         destino = self.remoto.caminho_atual()
         remoto = posixpath.join(destino, sel[0].nome)
@@ -306,7 +336,7 @@ class JanelaPrincipal:
             if self.remoto.caminho_atual() == pasta:
                 self.remoto.mostrar(pasta, itens)
 
-        self.fila.enfileirar(tarefa, pronto, self._erro_remoto)
+        self.fila.enfileirar(tarefa, self._se_atual(sessao, pronto), self._erro_de(sessao))
 
     # ---------- operações remotas
     def renomear(self):
@@ -330,12 +360,12 @@ class JanelaPrincipal:
             arquivos.renomear(sessao.sftp(), item.caminho, novo)
             return atual, arquivos.listar_remoto(sessao.sftp(), atual)
 
-        self.fila.enfileirar(tarefa, self._depois_remoto(f"Renomeado: {item.nome} -> {novo}"),
-                             self._erro_remoto)
+        self.fila.enfileirar(tarefa, self._depois_remoto(f"Renomeado: {item.nome} -> {novo}", sessao),
+                             self._erro_de(sessao))
 
     def mover_para(self):
         sel = self.remoto.selecionados()
-        if not self.conectado():
+        if not self.conectado() or not self._remoto_pronto():
             return
         if not sel:
             self.log.linha("Selecione itens no painel Remoto.")
@@ -346,7 +376,7 @@ class JanelaPrincipal:
             self._mover([e.caminho for e in sel], destino)
 
     def _mover(self, caminhos, destino):
-        if not self.conectado():
+        if not self.conectado() or not self._remoto_pronto():
             return
         sessao, atual = self.sessao, self.remoto.caminho_atual()
 
@@ -357,11 +387,11 @@ class JanelaPrincipal:
                 self.log.linha(f"Ignorado {posixpath.basename(c)}: {motivo}.")
             return atual, arquivos.listar_remoto(sessao.sftp(), atual)
 
-        self.fila.enfileirar(tarefa, self._depois_remoto(f"Mover: {len(caminhos)} item(ns) processado(s)."),
-                             self._erro_remoto)
+        self.fila.enfileirar(tarefa, self._depois_remoto(f"Mover: {len(caminhos)} item(ns) processado(s).", sessao),
+                             self._erro_de(sessao))
 
     def nova_pasta(self):
-        if not self.conectado():
+        if not self.conectado() or not self._remoto_pronto():
             return
         nome = simpledialog.askstring("Nova pasta", "Nome da nova pasta:", parent=self.raiz)
         if not nome:
@@ -376,7 +406,7 @@ class JanelaPrincipal:
             arquivos.criar_pasta_remota(sessao.sftp(), atual, nome)
             return atual, arquivos.listar_remoto(sessao.sftp(), atual)
 
-        self.fila.enfileirar(tarefa, self._depois_remoto(f"Pasta criada: {nome}"), self._erro_remoto)
+        self.fila.enfileirar(tarefa, self._depois_remoto(f"Pasta criada: {nome}", sessao), self._erro_de(sessao))
 
     def apagar(self):
         if not self.conectado():
@@ -396,5 +426,5 @@ class JanelaPrincipal:
                                   self.log.definir_progresso)
             return atual, arquivos.listar_remoto(sessao.sftp(), atual)
 
-        self.fila.enfileirar(tarefa, self._depois_remoto(f"Apagado(s): {len(caminhos)} item(ns)."),
-                             self._erro_remoto)
+        self.fila.enfileirar(tarefa, self._depois_remoto(f"Apagado(s): {len(caminhos)} item(ns).", sessao),
+                             self._erro_de(sessao))
