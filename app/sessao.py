@@ -46,8 +46,14 @@ class Sessao:
 
     def home(self) -> str:
         if self._home is None:
-            _, saida, _ = self.obter().exec_command("echo $HOME")
-            self._home = saida.read().decode(errors="replace").strip()
+            try:
+                valor = self.sftp().normalize(".")
+            except Exception:
+                valor = None
+            if (not isinstance(valor, str) or not valor.startswith("/")
+                    or any(ch in valor for ch in "\n\r\x00")):
+                raise RuntimeError("Não consegui descobrir a pasta pessoal no PC remoto.")
+            self._home = valor
         return self._home
 
     def fechar(self) -> None:

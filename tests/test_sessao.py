@@ -19,7 +19,23 @@ class FakeTransporte:
         self.keepalive = s
 
 
+class FakeSftpHome:
+    def __init__(self, home):
+        self.home = home
+        self.consultas = 0
+
+    def normalize(self, caminho):
+        assert caminho == "."
+        self.consultas += 1
+        return self.home
+
+    def close(self):
+        pass
+
+
 class FakeCli:
+    home = "/home/fulano"
+
     def __init__(self):
         self.transporte = FakeTransporte()
         self.fechado = False
@@ -34,7 +50,7 @@ class FakeCli:
 
     def open_sftp(self):
         self.sftps += 1
-        return object()
+        return FakeSftpHome(self.home)
 
     def exec_command(self, cmd):
         self.comandos.append(cmd)
@@ -92,10 +108,33 @@ def test_sftp_e_home_em_cache_e_resetam_ao_reconectar():
     s.conectar()
     assert s.sftp() is s.sftp() and abertos[0].sftps == 1
     assert s.home() == "/home/fulano" and s.home() == "/home/fulano"
-    assert abertos[0].comandos == ["echo $HOME"]
+    assert s.sftp().consultas == 1 and abertos[0].comandos == []
     abertos[0].transporte.ativo = False
     s.sftp()
     assert abertos[1].sftps == 1
+
+
+@pytest.mark.parametrize("ruim", ["", "Bem-vindo\n/home/fulano", "relativo", "/home/a\x00b", "/home/a\r", None])
+def test_home_invalido_levanta_e_nao_e_guardado(ruim):
+    s, abertos = _sessao()
+    s.conectar()
+    abertos[0].home = ruim
+    with pytest.raises(RuntimeError, match="pasta pessoal"):
+        s.home()
+    assert s._home is None
+    s._sftp.home = "/home/fulano"
+    assert s.home() == "/home/fulano"
+
+
+def test_home_falha_do_normalize_levanta_runtimeerror():
+    s, abertos = _sessao()
+    s.conectar()
+
+    def quebra(caminho):
+        raise OSError("sem realpath")
+    s.sftp().normalize = quebra
+    with pytest.raises(RuntimeError, match="pasta pessoal"):
+        s.home()
 
 
 def test_fechar_fecha_e_desconecta():

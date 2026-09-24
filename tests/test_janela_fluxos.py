@@ -18,6 +18,7 @@ class FakeSessao:
         self._sftp.pasta(PASTA + "/pasta com espaço")
         self._sftp.arquivo(PASTA + "/pasta com espaço/dentro.txt", b"z")
         self.falhar = False
+        self.falhar_home = False
         self.fechada = False
 
     def conectar(self):
@@ -35,6 +36,8 @@ class FakeSessao:
         return self._sftp
 
     def home(self):
+        if self.falhar_home:
+            raise RuntimeError("Não consegui descobrir a pasta pessoal no PC remoto.")
         return HOME
 
     def fechar(self):
@@ -242,6 +245,20 @@ def test_apagar_pelo_symlink_para_a_raiz_e_recusado(ambiente):
     antes = sftp.caminhos()
     j.apagar()
     esperar(j, lambda: "Recusado por segurança" in texto(j))
+    ocioso(j)
+    assert sftp.caminhos() == antes
+    assert "ERRO:" in texto(j)
+
+
+def test_apagar_sem_conseguir_descobrir_a_home_e_recusado(ambiente):
+    j, fake, comandos, respostas = ambiente
+    sftp = fake._sftp
+    conectar(j)
+    selecionar(j.remoto, ["x.py"])
+    fake.falhar_home = True
+    antes = sftp.caminhos()
+    j.apagar()
+    esperar(j, lambda: "pasta pessoal" in texto(j))
     ocioso(j)
     assert sftp.caminhos() == antes
     assert "ERRO:" in texto(j)
