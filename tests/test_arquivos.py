@@ -153,6 +153,86 @@ def test_apagar_barra_dupla_inicial_nao_burla_protecao():
     assert s.caminhos() == antes
 
 
+def _cenario_symlink():
+    s = FakeSftp()
+    s.arquivo(PERFIL + "/a.txt", b"1")
+    s.arquivo("/home/outro/x.txt", b"2")
+    s.link(PERFIL + "/raiz", "/")
+    return s
+
+
+def test_apagar_recusa_home_alcancada_por_symlink_para_a_raiz():
+    s = _cenario_symlink()
+    antes = s.caminhos()
+    with pytest.raises(OperacaoRecusada, match="segurança"):
+        arquivos.apagar_itens(s, [PERFIL + "/raiz/home/fulano"], HOME, PERFIL)
+    assert s.caminhos() == antes
+
+
+def test_apagar_recusa_symlink_para_ancestral_do_perfil():
+    s = FakeSftp()
+    s.arquivo(PERFIL + "/a.txt", b"1")
+    s.link("/tmp/x", "/home")
+    s.link("/tmp/y", HOME)
+    antes = s.caminhos()
+    for alvo in ("/tmp/x/fulano", "/tmp/y/projeto", "/tmp/x/fulano/projeto"):
+        with pytest.raises(OperacaoRecusada, match="segurança"):
+            arquivos.apagar_itens(s, [alvo], HOME, PERFIL)
+    assert s.caminhos() == antes
+
+
+def test_apagar_recusa_pasta_do_perfil_alcancada_por_outro_caminho():
+    s = FakeSftp()
+    s.arquivo("/mnt/dados/proj/a.txt", b"1")
+    s.link(HOME + "/dados", "/mnt/dados/proj")
+    antes = s.caminhos()
+    # perfil digitado pelo link, apagando pelo caminho real
+    with pytest.raises(OperacaoRecusada, match="segurança"):
+        arquivos.apagar_itens(s, ["/mnt/dados/proj"], HOME, HOME + "/dados")
+    # ancestral do perfil real, com o perfil digitado pelo link
+    with pytest.raises(OperacaoRecusada, match="segurança"):
+        arquivos.apagar_itens(s, ["/mnt/dados"], HOME, HOME + "/dados")
+    assert s.caminhos() == antes
+
+
+def test_apagar_o_proprio_symlink_remove_so_o_link():
+    s = _cenario_symlink()
+    arquivos.apagar_itens(s, [PERFIL + "/raiz"], HOME, PERFIL)
+    assert PERFIL + "/raiz" not in s.caminhos()
+    assert "/home/outro/x.txt" in s.caminhos() and PERFIL + "/a.txt" in s.caminhos()
+
+
+def test_apagar_normal_via_symlink_de_pasta_comum_funciona():
+    s = FakeSftp()
+    s.arquivo("/dados/lixo/a.txt", b"1")
+    s.link(PERFIL + "/atalho", "/dados")
+    arquivos.apagar_itens(s, [PERFIL + "/atalho/lixo"], HOME, PERFIL)
+    assert "/dados/lixo" not in s.caminhos() and "/dados/lixo/a.txt" not in s.caminhos()
+    assert "/dados" in s.caminhos()
+
+
+@pytest.mark.parametrize("quebra", ["home", "perfil", "pai"])
+def test_apagar_recusa_se_normalize_falha(quebra):
+    s = FakeSftp()
+    s.arquivo(PERFIL + "/a.txt", b"1")
+    original = s.normalize
+    alvo = {"home": HOME, "perfil": PERFIL, "pai": PERFIL}[quebra]
+    vezes = {"n": 0}
+
+    def normalize(caminho):
+        if caminho == alvo:
+            vezes["n"] += 1
+            # 'pai': só falha na consulta do pai do alvo (a do perfil já passou)
+            if quebra != "pai" or vezes["n"] > 1:
+                raise OSError("sem realpath")
+        return original(caminho)
+    s.normalize = normalize
+    antes = s.caminhos()
+    with pytest.raises(OperacaoRecusada, match="segurança"):
+        arquivos.apagar_itens(s, [PERFIL + "/a.txt"], HOME, PERFIL)
+    assert s.caminhos() == antes
+
+
 # ---------- política de conflito
 def test_politica_de_conflito_aplica_a_todos_e_cancelar_nao_grava():
     perguntas = []

@@ -195,13 +195,31 @@ def _apagar_rec(sftp, caminho):
 
 
 def apagar_itens(sftp, caminhos: list[str], home: str, pasta_perfil: str, progresso=None) -> None:
-    barrados = [c for c in caminhos if protegido(c, home, pasta_perfil)]
+    """Apaga só se NADA for protegido, olhando o texto digitado e o caminho real no servidor."""
+    try:
+        home_r = sftp.normalize(home)
+        perfil_r = sftp.normalize(pasta_perfil)
+    except Exception:
+        raise OperacaoRecusada("Recusado por segurança: não consegui confirmar a pasta pessoal e a pasta do "
+                               "perfil no PC remoto.") from None
+    homes, perfis = {home, home_r}, {pasta_perfil, perfil_r}
+    alvos, barrados = [], []
+    for c in caminhos:
+        cn = _normalizar(c)
+        try:
+            pai_r = sftp.normalize(posixpath.dirname(cn))
+        except Exception:
+            raise OperacaoRecusada(f"Recusado por segurança: não consegui confirmar o caminho real de {c}.") from None
+        alvo_r = posixpath.join(pai_r, posixpath.basename(cn))    # o último componente não é seguido
+        if any(protegido(x, h, p) for x in {cn, alvo_r} for h in homes for p in perfis):
+            barrados.append(c)
+        alvos.append(alvo_r)
     if barrados:
         raise OperacaoRecusada("Recusado por segurança: " + ", ".join(barrados))
-    for i, c in enumerate(caminhos, 1):
+    for i, alvo in enumerate(alvos, 1):
         if progresso:
-            progresso(i, len(caminhos), posixpath.basename(c.rstrip("/")))
-        _apagar_rec(sftp, _normalizar(c))
+            progresso(i, len(alvos), posixpath.basename(alvo.rstrip("/")))
+        _apagar_rec(sftp, alvo)
 
 
 # ---------- transferência

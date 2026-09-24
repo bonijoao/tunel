@@ -229,3 +229,19 @@ def test_fluxos_completos(ambiente, tmp_path):
     j.nova_pasta()
     esperar(j, lambda: "Pasta criada: depois do erro" in texto(j))
     assert PASTA + "/depois do erro" in sftp.itens
+
+
+def test_apagar_pelo_symlink_para_a_raiz_e_recusado(ambiente):
+    j, fake, comandos, respostas = ambiente
+    sftp = fake._sftp
+    sftp.link(PASTA + "/raiz", "/")
+    conectar(j)
+    j._pedir_remoto(PASTA + "/raiz/home")
+    esperar(j, lambda: j.remoto.caminho_atual() == PASTA + "/raiz/home")
+    selecionar(j.remoto, ["fulano"])
+    antes = sftp.caminhos()
+    j.apagar()
+    esperar(j, lambda: "Recusado por segurança" in texto(j))
+    ocioso(j)
+    assert sftp.caminhos() == antes
+    assert "ERRO:" in texto(j)
