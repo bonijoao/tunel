@@ -68,3 +68,20 @@ def test_hostname_e_auth_key_so_na_linha_do_up_e_quotados():
     for l in script.splitlines():
         if l.startswith(("LINHA=", "B=")):
             assert "pwn" not in l and "touch" not in l
+
+
+def test_script_tem_os_passos_essenciais():
+    s = preparar.gerar_script("~/joao/tailscale", "tskey-auth-abc", "uni-x")
+    assert "--tun=userspace-networking" in s
+    assert "@reboot" in s
+    assert "pkgs.tailscale.com/stable/tailscale_latest_amd64.tgz" in s
+    assert "--hostname=uni-x" in s or "--hostname='uni-x'" in s
+
+
+def test_script_nao_usa_sudo():
+    assert "sudo" not in preparar.gerar_script("~/t", "k", "h")
+
+
+def test_pasta_com_til_e_expandida_no_home():
+    s = preparar.gerar_script("~/joao/tailscale", "k", "h")
+    assert '"$HOME"/joao/tailscale' in s
