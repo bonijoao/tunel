@@ -127,11 +127,9 @@ class App:
         self._novo()
 
     # ---------- operações ----------
-    def _conexao(self):
-        p = self._perfil_atual()
+    def _conexao(self, p: Perfil, senha):
         existente = Path.home() / ".ssh" / "id_ed25519"
         chave = existente if existente.exists() else None
-        senha = self.v["senha"].get() or None
         return p, ssh.conectar(p, senha=senha, chave=chave)
 
     def _thread(self, fn):
@@ -143,9 +141,10 @@ class App:
         threading.Thread(target=alvo, daemon=True).start()
 
     def testar(self):
+        perfil, senha = self._perfil_atual(), self.v["senha"].get() or None
         def f():
             self.linha("Testando conexão...")
-            _, cli = self._conexao()
+            _, cli = self._conexao(perfil, senha)
             _, out, _ = cli.exec_command("hostname; whoami; Rscript --version 2>&1 | head -1; python3 --version")
             self.linha(out.read().decode())
             cli.close()
@@ -153,12 +152,12 @@ class App:
         self._thread(f)
 
     def instalar_chave(self):
+        perfil, senha = self._perfil_atual(), self.v["senha"].get()
         def f():
-            senha = self.v["senha"].get()
             if not senha:
                 self.linha("Informe a senha para instalar a chave (só é usada agora).")
                 return
-            ssh.instalar_chave(self._perfil_atual(), senha)
+            ssh.instalar_chave(perfil, senha)
             self.linha("Chave instalada. Você já pode usar o terminal sem senha.")
         self._thread(f)
 
@@ -170,18 +169,20 @@ class App:
             self.linha("ERRO: " + ssh.traduzir_erro(e))
 
     def enviar(self):
+        perfil, senha = self._perfil_atual(), self.v["senha"].get() or None
         local = filedialog.askopenfilename(title="Arquivo para enviar")
         if not local:
             return
         def f():
-            p, cli = self._conexao()
-            destino = p.pasta_remota.rstrip("/") + "/" + Path(local).name
+            _, cli = self._conexao(perfil, senha)
+            destino = perfil.pasta_remota.rstrip("/") + "/" + Path(local).name
             ssh.enviar(cli, local, destino)
             cli.close()
             self.linha(f"Enviado: {local} -> {destino}")
         self._thread(f)
 
     def baixar(self):
+        perfil, senha = self._perfil_atual(), self.v["senha"].get() or None
         remoto = simpledialog.askstring("Baixar", "Caminho do arquivo no PC remoto:")
         if not remoto:
             return
@@ -189,13 +190,14 @@ class App:
         if not local:
             return
         def f():
-            _, cli = self._conexao()
+            _, cli = self._conexao(perfil, senha)
             ssh.baixar(cli, remoto, local)
             cli.close()
             self.linha(f"Baixado: {remoto} -> {local}")
         self._thread(f)
 
     def rodar(self):
+        perfil, senha = self._perfil_atual(), self.v["senha"].get() or None
         remoto = simpledialog.askstring("Rodar script", "Caminho do script .R ou .py no PC remoto:")
         if not remoto:
             return
@@ -205,7 +207,7 @@ class App:
             self.linha(str(e))
             return
         def f():
-            _, cli = self._conexao()
+            _, cli = self._conexao(perfil, senha)
             self.linha(f"$ {cmd}")
             codigo = ssh.executar(cli, cmd, self.escrever)
             cli.close()
@@ -226,6 +228,7 @@ class App:
         self._thread(f)
 
     def preparar_remoto(self):
+        perfil, senha = self._perfil_atual(), self.v["senha"].get() or None
         chave = simpledialog.askstring("Auth key", "Cole a auth key do Tailscale (tskey-auth-...):", show="*")
         if not chave:
             return
@@ -244,7 +247,7 @@ class App:
                 + script + "\nExecutar?"):
             return
         def f():
-            _, cli = self._conexao()
+            _, cli = self._conexao(perfil, senha)
             codigo = preparar.preparar(cli, pasta, chave, host, self.escrever)
             cli.close()
             self.linha(f"\n[preparação terminou com código {codigo}]")
