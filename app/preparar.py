@@ -27,8 +27,8 @@ if ! pgrep -u "$USER" -x tailscaled >/dev/null; then
   sleep 4
 fi
 "$D/tailscale" --socket="$D/tailscaled.sock" up --auth-key={shlex.quote(auth_key)} --hostname={shlex.quote(hostname)}
-D_QUOTED=$(printf '%s\\n' "$D" | sed "s/'/'\\\\''/g; s/%/\\\\%/g")
-LINHA="@reboot nohup setsid '$D_QUOTED'/tailscaled --tun=userspace-networking --state='$D_QUOTED'/state/tailscaled.state --socket='$D_QUOTED'/tailscaled.sock >> '$D_QUOTED'/tailscaled.log 2>&1 < /dev/null &"
+B=$(printf %s "$D" | base64 | tr -d '\\n')
+LINHA='@reboot D=$(echo '"$B"' | base64 -d); nohup setsid "$D/tailscaled" --tun=userspace-networking --state="$D/state/tailscaled.state" --socket="$D/tailscaled.sock" >> "$D/tailscaled.log" 2>&1 < /dev/null &'
 ( crontab -l 2>/dev/null | grep -v 'tailscaled --tun=userspace' ; echo "$LINHA" ) | crontab -
 "$D/tailscale" --socket="$D/tailscaled.sock" status
 "$D/tailscale" --socket="$D/tailscaled.sock" ip -4

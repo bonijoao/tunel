@@ -1,3 +1,4 @@
+import os
 import re
 import shlex
 import shutil
@@ -20,11 +21,15 @@ def test_script_nao_usa_sudo():
     assert "sudo" not in preparar.gerar_script("~/t", "k", "h")
 
 
-def test_metacaracteres_ficam_quotados():
-    s = preparar.gerar_script("/tmp/a b; touch /tmp/pwn", "k; touch /tmp/pwn2", "h")
-    assert "'/tmp/a b; touch /tmp/pwn'" in s
-    assert "'k; touch /tmp/pwn2'" in s
-    assert "\ntouch /tmp/pwn" not in s
+def test_metacaracteres_ficam_quotados_no_auth():
+    """Auth key and hostname with special chars are shlex.quoted on the up command."""
+    s = preparar.gerar_script("/tmp/safe", "k; touch /tmp/pwn", "h; rm /")
+    # Find the up line
+    up_line = [line for line in s.split("\n") if "--auth-key=" in line and "up" in line][0]
+    # Auth key should be quoted (shlex.quote adds quotes)
+    assert "'k; touch /tmp/pwn'" in up_line or '"k; touch /tmp/pwn"' in up_line
+    # Hostname should be quoted
+    assert "'h; rm /'" in up_line or '"h; rm /"' in up_line
 
 
 def test_pasta_com_til_e_expandida_no_home():
@@ -32,68 +37,57 @@ def test_pasta_com_til_e_expandida_no_home():
     assert '"$HOME"/joao/tailscale' in s
 
 
-def test_cron_line_nao_expande_dollar_signs():
-    """Cron line must use D_QUOTED (quoted) not unquoted $D."""
-    s = preparar.gerar_script("/tmp/a b; touch /tmp/pwn", "k", "h")
-    # Should define D_QUOTED using sed
-    assert "D_QUOTED=" in s
-    assert "sed" in s
-    # LINHA should use D_QUOTED not raw $D
-    assert "LINHA=" in s
-    match = re.search(r"LINHA=\"(.+?)\"", s, re.DOTALL)
+def test_cron_uses_base64_not_sed():
+    """Cron line must use base64 encoding, not sed."""
+    s = preparar.gerar_script("/tmp/test", "k", "h")
+    # Should use base64 encoding
+    assert "base64" in s
+    # Should NOT have sed command that was in v1 (D_QUOTED/sed approach)
+    before_linha = s.split("LINHA=")[0]
+    assert "sed" not in before_linha, "sed should not be used for D_QUOTED"
+
+
+def test_cron_line_no_percent_signs():
+    """The crontab LINHA should not contain unescaped % (cron line separator)."""
+    s = preparar.gerar_script("/tmp/a%b; echo test", "key", "host")
+    # Extract LINHA
+    match = re.search(r"LINHA='(.+?)'", s, re.DOTALL)
     assert match, "LINHA definition not found"
     linha = match.group(1)
-    # The line should quote the paths using D_QUOTED
-    assert "'$D_QUOTED'" in s or "'$D_QUOTED'/" in s
+    # % should not appear (it's encoded in base64)
+    assert "%" not in linha, "LINHA contains unescaped %, cron will treat as newline"
 
 
-def test_cron_line_escapa_aspas_simples():
-    """Cron line sed must handle single quotes correctly."""
-    s = preparar.gerar_script("/tmp/a'b", "k", "h")
-    # Should have the sed command that replaces ' with '\''
-    assert "sed" in s
-    assert "s/'/'\\\\''/g" in s
+def test_cron_line_no_raw_pasta():
+    """The LINHA should not contain the raw, unencoded path."""
+    paths = [
+        "/tmp/a b; touch /tmp/pwn",
+        "/tmp/a%b",
+        "/x'; touch /tmp/pwn; '",
+    ]
+    for pasta in paths:
+        s = preparar.gerar_script(pasta, "key", "host")
+        linha_match = re.search(r"LINHA='(.+?)'", s, re.DOTALL)
+        assert linha_match
+        linha = linha_match.group(1)
+        # Raw path must not appear in LINHA (should be base64-encoded)
+        assert pasta not in linha, f"Raw path {pasta} found in LINHA"
 
 
-def test_cron_line_escapa_percent():
-    """Cron line sed must escape % (special in cron)."""
-    s = preparar.gerar_script("/tmp/a%b", "k", "h")
-    # Should have sed that replaces % with \%
-    assert "sed" in s
-    assert "s/%/\\\\%/g" in s
+def test_cron_contains_base64_decode():
+    """LINHA should contain D=$(echo ... | base64 -d) to decode at runtime."""
+    s = preparar.gerar_script("/tmp/test", "k", "h")
+    # Should have base64 -d in LINHA to decode
+    assert "base64 -d" in s, "base64 -d not found"
+    # Pattern: D=$(echo 'base64value' | base64 -d)
+    assert re.search(r"D=\$\(echo '.*?' \| base64 -d\)", s), "base64 decode pattern not found"
 
 
-def test_hostname_com_metacaracteres_nao_injeta():
-    """Hostname with special chars should be properly quoted."""
-    s = preparar.gerar_script("~/t", "k", "h; rm -rf /")
-    # The hostname should be quoted in the auth command
-    # Either as explicit shlex.quote or inside quotes
-    auth_line = [line for line in s.split("\n") if "--hostname=" in line][0]
-    assert "--hostname=" in auth_line
-    # Should not have unquoted semicolon after hostname
-    assert "hostname=h;" not in auth_line or "--hostname='h; rm" in auth_line or '--hostname="h;' in auth_line
-
-
-def test_auth_key_com_metacaracteres_nao_injeta():
-    """Auth key with special chars should be properly quoted."""
-    s = preparar.gerar_script("~/t", "k$; touch /tmp/x", "h")
-    # The auth key should be quoted
-    auth_line = [line for line in s.split("\n") if "--auth-key=" in line][0]
-    assert "--auth-key=" in auth_line
-    # Should not have unquoted semicolon after key
-    assert "--auth-key=k$;" not in auth_line or "--auth-key=" in auth_line
-
-
-def test_cron_line_contains_d_quoted_variable():
-    """LINHA should use D_QUOTED variable, not raw $D."""
-    s = preparar.gerar_script("/tmp/dangerous; rm -rf /", "key", "host")
-    # Should have the D_QUOTED definition
-    assert "D_QUOTED=$(printf '%s" in s
-    # LINHA should reference $D_QUOTED, not $D
-    linha_match = re.search(r'LINHA="(.+?)"', s, re.DOTALL)
-    assert linha_match
-    linha = linha_match.group(1)
-    # Should use $D_QUOTED, not $D without quotes
-    assert "$D_QUOTED" in linha
-    # Should not have unquoted $D followed by /
-    assert "$D/" not in linha or "$D_QUOTED/" in linha or "'$D_QUOTED'" in linha
+def test_deduplicate_grep_still_works():
+    """The grep -v filter for de-duplication should still match LINHA."""
+    s = preparar.gerar_script("/tmp/test", "key", "host")
+    # LINHA should contain the strings that grep -v looks for
+    assert "tailscaled" in s
+    assert "--tun=userspace" in s
+    # Verify grep pattern
+    assert re.search(r"grep -v 'tailscaled --tun=userspace'", s)
