@@ -67,3 +67,30 @@ def test_traduzir_erro_rede(exc, trecho):
 def test_traduzir_erro_autenticacao():
     import paramiko
     assert "senha" in ssh.traduzir_erro(paramiko.AuthenticationException()).lower()
+
+
+def test_traduzir_erro_arquivo_nao_encontrado():
+    msg = ssh.traduzir_erro(FileNotFoundError("No such file or directory"))
+    assert "não encontrado" in msg.lower() or "arquivo" in msg.lower()
+
+
+def test_traduzir_erro_permissao_negada():
+    msg = ssh.traduzir_erro(PermissionError("Permission denied"))
+    assert "permissão" in msg.lower()
+
+
+def test_traduzir_erro_ssh_sem_autenticacao():
+    import paramiko
+    msg = ssh.traduzir_erro(paramiko.SSHException("No authentication methods available"))
+    assert "senha" in msg.lower() or "chave" in msg.lower()
+
+
+def test_traduzir_erro_ssh_generico():
+    import paramiko
+    msg = ssh.traduzir_erro(paramiko.SSHException("Host key verification failed"))
+    assert "ssh" in msg.lower() or "negociação" in msg.lower()
+
+
+def test_traduzir_erro_runtime():
+    msg = ssh.traduzir_erro(RuntimeError("Connection refused"))
+    assert "Connection refused" in msg or "remoto" in msg.lower()

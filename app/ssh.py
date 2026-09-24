@@ -43,7 +43,17 @@ def comando_terminal(perfil: Perfil, chave) -> list[str]:
 def traduzir_erro(exc: Exception) -> str:
     if isinstance(exc, paramiko.AuthenticationException):
         return "Login ou senha incorretos. Confira as credenciais deste PC."
-    if isinstance(exc, (TimeoutError, OSError, paramiko.SSHException)):
+    if isinstance(exc, FileNotFoundError):
+        return f"Arquivo ou pasta não encontrado (local ou no PC remoto): {exc}"
+    if isinstance(exc, PermissionError):
+        return f"Sem permissão para acessar o arquivo ou pasta: {exc}"
+    if isinstance(exc, paramiko.SSHException):
+        if "No authentication methods available" in str(exc):
+            return "Nenhum método de autenticação disponível. Preencha a senha ou instale uma chave SSH."
+        return f"Falha na negociação SSH: {exc}"
+    if isinstance(exc, RuntimeError):
+        return f"Erro na operação remota: {exc}"
+    if isinstance(exc, (TimeoutError, OSError)):
         return ("Não consegui alcançar o PC. Confira: o Tailscale está ligado e logado "
                 "neste computador? O IP/nome está correto? O PC da universidade está ligado?")
     return f"Erro inesperado: {exc}"
