@@ -3,7 +3,5 @@ __pycache__/
 build/
 dist/
 *.spec
-.claude/
-CLAUDE.md
 .superpowers/
 docs/superpowers/
