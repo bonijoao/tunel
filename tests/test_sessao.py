@@ -103,6 +103,57 @@ def test_falha_ao_reconectar_propaga_sem_laco():
     assert len(chamadas) == 2
 
 
+def test_obter_depois_de_fechar_nao_reconecta():
+    s, abertos = _sessao()
+    s.conectar()
+    s.fechar()
+    with pytest.raises(RuntimeError, match="Sem conexão"):
+        s.obter()
+    with pytest.raises(RuntimeError, match="Sem conexão"):
+        s.sftp()
+    assert len(abertos) == 1
+
+
+def test_obter_depois_de_conectar_que_falhou_nao_abre_outra_conexao():
+    chamadas = []
+
+    def abrir():
+        chamadas.append(1)
+        raise TimeoutError("fora")
+    s = Sessao(abrir)
+    with pytest.raises(TimeoutError):
+        s.conectar()
+    with pytest.raises(RuntimeError, match="Sem conexão"):
+        s.obter()
+    assert len(chamadas) == 1
+
+
+def test_depois_de_reconexao_que_falhou_obter_levanta_em_vez_de_repetir():
+    chamadas = []
+
+    def abrir():
+        chamadas.append(1)
+        if len(chamadas) > 1:
+            raise TimeoutError("fora")
+        return FakeCli()
+    s = Sessao(abrir)
+    s.conectar()
+    s._cli.transporte.ativo = False
+    with pytest.raises(TimeoutError):
+        s.obter()
+    with pytest.raises(RuntimeError, match="Sem conexão"):
+        s.obter()
+    assert len(chamadas) == 2
+
+
+def test_conectar_explicito_depois_de_fechar_volta_a_funcionar():
+    s, abertos = _sessao()
+    s.conectar()
+    s.fechar()
+    s.conectar()
+    assert s.obter() is abertos[1] and s.conectado()
+
+
 def test_sftp_e_home_em_cache_e_resetam_ao_reconectar():
     s, abertos = _sessao()
     s.conectar()

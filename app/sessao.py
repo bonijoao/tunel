@@ -14,6 +14,8 @@ class Sessao:
         self._cli = None
         self._sftp = None
         self._home = None
+        self._estabelecida = False     # já conectou com sucesso (e a conexão não foi refeita em falha)
+        self._encerrada = False        # fechar() foi chamado: nunca mais reconectar sozinha
 
     def _vivo(self) -> bool:
         if self._cli is None:
@@ -25,16 +27,21 @@ class Sessao:
         return self._vivo()
 
     def conectar(self) -> None:
-        self.fechar()
+        self._liberar()
+        self._estabelecida = False
+        self._encerrada = False
         cli = self._abrir()
         try:
             cli.get_transport().set_keepalive(30)
         except AttributeError:
             pass
         self._cli = cli
+        self._estabelecida = True
 
     def obter(self):
         if not self._vivo():
+            if self._encerrada or not self._estabelecida:
+                raise RuntimeError("Sem conexão com o PC remoto.")
             self.conectar()
         return self._cli
 
@@ -57,6 +64,10 @@ class Sessao:
         return self._home
 
     def fechar(self) -> None:
+        self._encerrada = True
+        self._liberar()
+
+    def _liberar(self) -> None:
         for obj in (self._sftp, self._cli):
             try:
                 if obj is not None:
