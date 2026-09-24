@@ -17,6 +17,8 @@ def gerar_script(pasta: str, auth_key: str, hostname: str) -> str:
 D={d}
 mkdir -p "$D/state"
 cd "$D"
+D=$(pwd -P)
+trap 'rm -f "$D/.authkey"' EXIT
 if [ ! -x "$D/tailscaled" ]; then
   curl -fsSL -o ts.tgz {_URL}
   tar xzf ts.tgz --strip-components=1
@@ -26,7 +28,9 @@ if ! pgrep -u "$USER" -x tailscaled >/dev/null; then
   nohup setsid "$D/tailscaled" --tun=userspace-networking --state="$D/state/tailscaled.state" --socket="$D/tailscaled.sock" > "$D/tailscaled.log" 2>&1 < /dev/null &
   sleep 4
 fi
-"$D/tailscale" --socket="$D/tailscaled.sock" up --auth-key={shlex.quote(auth_key)} --hostname={shlex.quote(hostname)}
+( umask 077; printf %s {shlex.quote(auth_key)} > "$D/.authkey" )
+"$D/tailscale" --socket="$D/tailscaled.sock" up --auth-key=file:"$D/.authkey" --hostname={shlex.quote(hostname)}
+rm -f "$D/.authkey"
 B=$(printf %s "$D" | base64 | tr -d '\\n')
 LINHA='@reboot D=$(echo '"$B"' | base64 -d); nohup setsid "$D/tailscaled" --tun=userspace-networking --state="$D/state/tailscaled.state" --socket="$D/tailscaled.sock" >> "$D/tailscaled.log" 2>&1 < /dev/null &'
 ( crontab -l 2>/dev/null | grep -v -- '--tun=userspace-networking' || true ; echo "$LINHA" ) | crontab -

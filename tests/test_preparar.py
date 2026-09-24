@@ -12,9 +12,22 @@ HOSTIS = ["/tmp/a b; touch /tmp/pwn'x%y", "/x'; touch /tmp/pwn; '"]
 precisa_bash = pytest.mark.skipif(shutil.which("bash") is None, reason="bash ausente")
 
 
+def _trecho(script, prefixos):
+    """Linhas do script por prefixo exato; da atribuição D= só a primeira (a da pasta)."""
+    linhas, visto_d = [], False
+    for l in script.splitlines():
+        if l.startswith("D="):
+            if visto_d:
+                continue
+            visto_d = True
+        if l.startswith(prefixos):
+            linhas.append(l)
+    return linhas
+
+
 def _linha_cron(pasta, auth_key="k; touch /tmp/pwn2", hostname="h$(touch /tmp/pwn3)"):
     script = preparar.gerar_script(pasta, auth_key, hostname)
-    trecho = [l for l in script.splitlines() if l.startswith(("D=", "B=", "LINHA="))]
+    trecho = _trecho(script, ("D=", "B=", "LINHA="))
     assert [l[:2] for l in trecho] == ["D=", "B=", "LI"]
     sh_cmd = shutil.which("sh") or "bash"
     r = subprocess.run([sh_cmd, "-c", "\n".join(trecho) + '\nprintf "%s" "$LINHA"'],
@@ -64,7 +77,10 @@ def test_hostname_e_auth_key_so_na_linha_do_up_e_quotados():
     script = preparar.gerar_script("/x/y", auth, host)
     up = [l for l in script.splitlines() if " up " in l]
     assert len(up) == 1
-    assert shlex.quote(auth) in up[0] and shlex.quote(host) in up[0]
+    assert shlex.quote(host) in up[0] and shlex.quote(auth) not in up[0]
+    chave = [l for l in script.splitlines() if l.startswith("( umask 077; printf %s ")]
+    assert len(chave) == 1 and shlex.quote(auth) in chave[0]
+    assert sum(shlex.quote(auth) in l for l in script.splitlines()) == 1
     for l in script.splitlines():
         if l.startswith(("LINHA=", "B=")):
             assert "pwn" not in l and "touch" not in l
@@ -114,7 +130,7 @@ def test_crontab_instala_uma_linha_reboot(tmp_path, fixture, outras):
     fn, env, saida = _crontab_falso(tmp_path, fixture)
     pipeline = [l for l in script.splitlines() if l.startswith("( crontab")]
     assert len(pipeline) == 1
-    linhas = [l for l in script.splitlines() if l.startswith(("D=", "B=", "LINHA=", "( crontab"))]
+    linhas = _trecho(script, ("D=", "B=", "LINHA=", "( crontab"))
     sh_cmd = shutil.which("sh") or "bash"
     r = subprocess.run([sh_cmd, "-c", "set -e\n" + fn + "\n".join(linhas)],
                        capture_output=True, text=True, env=env)
@@ -124,3 +140,32 @@ def test_crontab_instala_uma_linha_reboot(tmp_path, fixture, outras):
     assert "--tun=userspace-networking" in [l for l in instaladas if l.startswith("@reboot")][0]
     assert "QQ==" not in "".join(instaladas)
     assert [l for l in instaladas if not l.startswith("@reboot")] == outras
+
+
+@precisa_bash
+def test_pasta_relativa_vira_caminho_absoluto_no_cron(tmp_path):
+    import os
+    script = preparar.gerar_script("rel/ts", "k", "h")
+    linhas = script.splitlines()
+    i_cd = linhas.index('cd "$D"')
+    assert linhas[i_cd + 1] == 'D=$(pwd -P)'
+    sel = [linhas[1], 'mkdir -p "$D/state"', 'cd "$D"', 'D=$(pwd -P)']
+    sel += [l for l in linhas if l.startswith(("B=", "LINHA="))]
+    assert linhas[1].startswith("D=")
+    sh_cmd = shutil.which("sh") or "bash"
+    r = subprocess.run([sh_cmd, "-c", "set -e\n" + "\n".join(sel) + '\nprintf "%s" "$LINHA"'],
+                       capture_output=True, text=True, cwd=tmp_path)
+    assert r.returncode == 0, r.stderr
+    b64 = re.search(r"D=\$\(echo (\S+) \| base64 -d\)", r.stdout).group(1)
+    assert base64.b64decode(b64).decode().startswith("/")
+
+
+def test_auth_key_nao_aparece_em_argv():
+    auth = "tskey-auth-SEGREDO"
+    script = preparar.gerar_script("/x/y", auth, "h")
+    assert "--auth-key=" + auth not in script
+    assert "--auth-key=" + shlex.quote(auth) not in script
+    assert '--auth-key=file:"$D/.authkey"' in script
+    assert "trap 'rm -f \"$D/.authkey\"' EXIT" in script
+    assert f'printf %s {shlex.quote(auth)} > "$D/.authkey"' in script
+    assert 'rm -f "$D/.authkey"' in script
