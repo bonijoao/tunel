@@ -1,3 +1,4 @@
+import gc
 import tkinter as tk
 
 import pytest
@@ -25,4 +26,5 @@ def test_janela_constroi_e_navega_no_local(tmp_path):
         assert j.sessao is None and j.conectado() is False
         assert raiz.title() == "Tunel-LAD"
     finally:
+        gc.collect()
         raiz.destroy()
