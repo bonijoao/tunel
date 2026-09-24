@@ -3,6 +3,7 @@ import os
 import posixpath
 import shlex
 import shutil
+import stat
 import subprocess
 from pathlib import Path
 from typing import Callable
@@ -114,6 +115,55 @@ def baixar(cli, remoto: str, local: str) -> None:
     sftp = cli.open_sftp()
     try:
         sftp.get(resolver_remoto(cli, remoto), local)
+    finally:
+        sftp.close()
+
+
+def _garantir_dir_remoto(sftp, caminho: str) -> None:
+    try:
+        sftp.stat(caminho)
+    except (IOError, OSError):
+        sftp.mkdir(caminho)
+
+
+def _enviar_rec(sftp, local: str, remoto: str) -> None:
+    _garantir_dir_remoto(sftp, remoto)
+    for nome in sorted(os.listdir(local)):
+        origem = os.path.join(local, nome)
+        if os.path.islink(origem):
+            continue
+        destino = posixpath.join(remoto, nome)
+        if os.path.isdir(origem):
+            _enviar_rec(sftp, origem, destino)
+        elif os.path.isfile(origem):
+            sftp.put(origem, destino)
+
+
+def enviar_pasta(cli, local_dir: str, remoto_dir: str) -> None:
+    sftp = cli.open_sftp()
+    try:
+        _enviar_rec(sftp, local_dir, resolver_remoto(cli, remoto_dir))
+    finally:
+        sftp.close()
+
+
+def _baixar_rec(sftp, remoto: str, local: str) -> None:
+    os.makedirs(local, exist_ok=True)
+    for attr in sftp.listdir_attr(remoto):
+        origem = posixpath.join(remoto, attr.filename)
+        destino = os.path.join(local, attr.filename)
+        if stat.S_ISLNK(attr.st_mode):
+            continue
+        if stat.S_ISDIR(attr.st_mode):
+            _baixar_rec(sftp, origem, destino)
+        elif stat.S_ISREG(attr.st_mode):
+            sftp.get(origem, destino)
+
+
+def baixar_pasta(cli, remoto_dir: str, local_dir: str) -> None:
+    sftp = cli.open_sftp()
+    try:
+        _baixar_rec(sftp, resolver_remoto(cli, remoto_dir), local_dir)
     finally:
         sftp.close()
 
