@@ -29,9 +29,9 @@ def test_instalar_chave_quota_e_e_idempotente():
 
 
 def test_comando_terminal_com_chave():
-    p = Perfil("n", "100.1.1.1", "geraldo")
+    p = Perfil("n", "100.1.1.1", "fulano")
     cmd = ssh.comando_terminal(p, "C:/k/id")
-    assert cmd[-1] == "geraldo@100.1.1.1"
+    assert cmd[-1] == "fulano@100.1.1.1"
     assert "-i" in cmd and "C:/k/id" in cmd
 
 
@@ -93,7 +93,8 @@ def test_traduzir_erro_ssh_generico():
 
 def test_traduzir_erro_runtime():
     msg = ssh.traduzir_erro(RuntimeError("Connection refused"))
-    assert "Connection refused" in msg or "remoto" in msg.lower()
+    assert msg.startswith("Erro na operação remota")
+    assert "Connection refused" in msg
 
 
 class _CanalFalso:

@@ -4,7 +4,7 @@ from app.perfis import Perfil
 
 
 def test_salvar_e_carregar_preserva_nomes_estranhos(tmp_path):
-    lista = [Perfil('PC "do" João, sala 3', "10.0.0.1", "geraldo", "~/Documents/x y")]
+    lista = [Perfil('PC "do" João, sala 3', "10.0.0.1", "fulano", "~/Documents/x y")]
     perfis.salvar(lista, tmp_path)
     assert perfis.carregar(tmp_path) == lista
 
