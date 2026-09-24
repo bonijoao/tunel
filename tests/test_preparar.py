@@ -85,3 +85,42 @@ def test_script_nao_usa_sudo():
 def test_pasta_com_til_e_expandida_no_home():
     s = preparar.gerar_script("~/joao/tailscale", "k", "h")
     assert '"$HOME"/joao/tailscale' in s
+
+
+def _crontab_falso(tmp_path, fixture):
+    import os
+    entrada, saida = tmp_path / "entrada", tmp_path / "saida"
+    if fixture is not None:
+        entrada.write_text(fixture, encoding="utf-8")
+    fn = ('crontab() { if [ "$1" = "-l" ]; then '
+          'if [ -f "$CRON_IN" ]; then cat "$CRON_IN"; else echo "no crontab for x" >&2; return 1; fi; '
+          'else cat > "$CRON_OUT"; fi; }\n')
+    env = dict(os.environ, CRON_IN=str(entrada), CRON_OUT=str(saida))
+    return fn, env, saida
+
+
+ANTIGA = "@reboot D=$(echo QQ== | base64 -d); nohup setsid \"$D/tailscaled\" --tun=userspace-networking --state=x &\n"
+
+
+@precisa_bash
+@pytest.mark.parametrize("fixture,outras", [
+    (None, []),
+    (ANTIGA, []),
+    ("0 5 * * * /usr/bin/backup\n" + ANTIGA + "30 6 * * 1 /bin/outra\n",
+     ["0 5 * * * /usr/bin/backup", "30 6 * * 1 /bin/outra"]),
+])
+def test_crontab_instala_uma_linha_reboot(tmp_path, fixture, outras):
+    script = preparar.gerar_script("/x/y", "k", "h")
+    fn, env, saida = _crontab_falso(tmp_path, fixture)
+    pipeline = [l for l in script.splitlines() if l.startswith("( crontab")]
+    assert len(pipeline) == 1
+    linhas = [l for l in script.splitlines() if l.startswith(("D=", "B=", "LINHA=", "( crontab"))]
+    sh_cmd = shutil.which("sh") or "bash"
+    r = subprocess.run([sh_cmd, "-c", "set -e\n" + fn + "\n".join(linhas)],
+                       capture_output=True, text=True, env=env)
+    assert r.returncode == 0, r.stderr
+    instaladas = saida.read_text(encoding="utf-8").splitlines()
+    assert len([l for l in instaladas if l.startswith("@reboot")]) == 1
+    assert "--tun=userspace-networking" in [l for l in instaladas if l.startswith("@reboot")][0]
+    assert "QQ==" not in "".join(instaladas)
+    assert [l for l in instaladas if not l.startswith("@reboot")] == outras
