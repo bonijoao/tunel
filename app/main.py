@@ -1,6 +1,10 @@
 import os
+import posixpath
+import subprocess
 import threading
 import tkinter as tk
+import webbrowser
+from contextlib import contextmanager
 from pathlib import Path
 from tkinter import filedialog, messagebox, simpledialog, ttk
 
@@ -60,8 +64,11 @@ class App:
         botoes.pack(fill="x", pady=4)
         acoes = (("Testar", self.testar), ("Instalar minha chave", self.instalar_chave),
                  ("Abrir terminal", self.terminal), ("Enviar arquivo", self.enviar),
-                 ("Baixar arquivo", self.baixar), ("Rodar script", self.rodar),
-                 ("Estado do Tailscale", self.estado_ts), ("Preparar PC remoto", self.preparar_remoto))
+                 ("Baixar arquivo", self.baixar), ("Enviar pasta", self.enviar_pasta),
+                 ("Baixar pasta", self.baixar_pasta), ("Rodar script remoto", self.rodar),
+                 ("Rodar script local", self.rodar_local), ("Estado do Tailscale", self.estado_ts),
+                 ("Entrar no Tailscale (auth key)", self.entrar_ts),
+                 ("Preparar PC remoto", self.preparar_remoto))
         for i, (t, c) in enumerate(acoes):
             ttk.Button(botoes, text=t, command=c).grid(row=i // 4, column=i % 4, padx=2, pady=2, sticky="we")
         for c in range(4):
@@ -106,8 +113,9 @@ class App:
 
     def _salvar(self):
         p = self._perfil_atual()
-        if not p.host or not p.login:
-            messagebox.showwarning("Túnel", "Preencha Host/IP e Login.")
+        erro = perfis.validar(p)
+        if erro:
+            messagebox.showwarning("Túnel", erro)
             return
         self.lista = [x for x in self.lista if x.nome != p.nome] + [p]
         perfis.salvar(self.lista)
@@ -132,6 +140,23 @@ class App:
         chave = existente if existente.exists() else None
         return p, ssh.conectar(p, senha=senha, chave=chave)
 
+    @contextmanager
+    def _cliente(self, p: Perfil, senha):
+        _, cli = self._conexao(p, senha)
+        try:
+            yield cli
+        finally:
+            cli.close()
+
+    def _perfil_valido(self):
+        """Lê o perfil na thread principal; None (com aviso no log) se login/host forem inválidos."""
+        p = self._perfil_atual()
+        erro = perfis.validar(p)
+        if erro:
+            self.linha(erro)
+            return None
+        return p
+
     def _thread(self, fn):
         def alvo():
             try:
@@ -141,18 +166,21 @@ class App:
         threading.Thread(target=alvo, daemon=True).start()
 
     def testar(self):
-        perfil, senha = self._perfil_atual(), self.v["senha"].get() or None
+        perfil, senha = self._perfil_valido(), self.v["senha"].get() or None
+        if not perfil:
+            return
         def f():
             self.linha("Testando conexão...")
-            _, cli = self._conexao(perfil, senha)
-            _, out, _ = cli.exec_command("hostname; whoami; Rscript --version 2>&1 | head -1; python3 --version")
-            self.linha(out.read().decode())
-            cli.close()
+            with self._cliente(perfil, senha) as cli:
+                _, out, _ = cli.exec_command("hostname; whoami; Rscript --version 2>&1 | head -1; python3 --version")
+                self.linha(out.read().decode(errors="replace"))
             self.linha("Conexão OK.")
         self._thread(f)
 
     def instalar_chave(self):
-        perfil, senha = self._perfil_atual(), self.v["senha"].get()
+        perfil, senha = self._perfil_valido(), self.v["senha"].get()
+        if not perfil:
+            return
         def f():
             if not senha:
                 self.linha("Informe a senha para instalar a chave (só é usada agora).")
@@ -162,27 +190,33 @@ class App:
         self._thread(f)
 
     def terminal(self):
+        perfil = self._perfil_valido()
+        if not perfil:
+            return
         try:
-            chave, _ = ssh.garantir_chave()
-            ssh.abrir_terminal(self._perfil_atual(), chave)
+            existente = Path.home() / ".ssh" / "id_ed25519"
+            ssh.abrir_terminal(perfil, existente if existente.exists() else None)
         except Exception as e:
             self.linha("ERRO: " + ssh.traduzir_erro(e))
 
     def enviar(self):
-        perfil, senha = self._perfil_atual(), self.v["senha"].get() or None
+        perfil, senha = self._perfil_valido(), self.v["senha"].get() or None
+        if not perfil:
+            return
         local = filedialog.askopenfilename(title="Arquivo para enviar")
         if not local:
             return
         def f():
-            _, cli = self._conexao(perfil, senha)
             destino = perfil.pasta_remota.rstrip("/") + "/" + Path(local).name
-            ssh.enviar(cli, local, destino)
-            cli.close()
+            with self._cliente(perfil, senha) as cli:
+                ssh.enviar(cli, local, destino)
             self.linha(f"Enviado: {local} -> {destino}")
         self._thread(f)
 
     def baixar(self):
-        perfil, senha = self._perfil_atual(), self.v["senha"].get() or None
+        perfil, senha = self._perfil_valido(), self.v["senha"].get() or None
+        if not perfil:
+            return
         remoto = simpledialog.askstring("Baixar", "Caminho do arquivo no PC remoto:")
         if not remoto:
             return
@@ -190,15 +224,57 @@ class App:
         if not local:
             return
         def f():
-            _, cli = self._conexao(perfil, senha)
-            ssh.baixar(cli, remoto, local)
-            cli.close()
+            with self._cliente(perfil, senha) as cli:
+                ssh.baixar(cli, remoto, local)
             self.linha(f"Baixado: {remoto} -> {local}")
         self._thread(f)
 
+    def enviar_pasta(self):
+        perfil, senha = self._perfil_valido(), self.v["senha"].get() or None
+        if not perfil:
+            return
+        local = filedialog.askdirectory(title="Pasta para enviar")
+        if not local:
+            return
+        def f():
+            destino = perfil.pasta_remota.rstrip("/") + "/" + Path(local).name
+            with self._cliente(perfil, senha) as cli:
+                ssh.enviar_pasta(cli, local, destino)
+            self.linha(f"Pasta enviada: {local} -> {destino}")
+        self._thread(f)
+
+    def baixar_pasta(self):
+        perfil, senha = self._perfil_valido(), self.v["senha"].get() or None
+        if not perfil:
+            return
+        remoto = simpledialog.askstring("Baixar pasta", "Caminho da pasta no PC remoto:")
+        if not remoto:
+            return
+        pai = filedialog.askdirectory(title="Onde salvar a pasta")
+        if not pai:
+            return
+        local = str(Path(pai) / (posixpath.basename(remoto.rstrip("/")) or "pasta_remota"))
+        def f():
+            with self._cliente(perfil, senha) as cli:
+                ssh.baixar_pasta(cli, remoto, local)
+            self.linha(f"Pasta baixada: {remoto} -> {local}")
+        self._thread(f)
+
+    def _executar_comando(self, perfil, senha, cmd, antes=None):
+        def f():
+            with self._cliente(perfil, senha) as cli:
+                if antes:
+                    antes(cli)
+                self.linha(f"$ {cmd}")
+                codigo = ssh.executar(cli, cmd, self.escrever)
+            self.linha(f"\n[terminou com código {codigo}]")
+        self._thread(f)
+
     def rodar(self):
-        perfil, senha = self._perfil_atual(), self.v["senha"].get() or None
-        remoto = simpledialog.askstring("Rodar script", "Caminho do script .R ou .py no PC remoto:")
+        perfil, senha = self._perfil_valido(), self.v["senha"].get() or None
+        if not perfil:
+            return
+        remoto = simpledialog.askstring("Rodar script remoto", "Caminho do script .R ou .py no PC remoto:")
         if not remoto:
             return
         try:
@@ -206,29 +282,73 @@ class App:
         except ValueError as e:
             self.linha(str(e))
             return
-        def f():
-            _, cli = self._conexao(perfil, senha)
-            self.linha(f"$ {cmd}")
-            codigo = ssh.executar(cli, cmd, self.escrever)
-            cli.close()
-            self.linha(f"\n[terminou com código {codigo}]")
-        self._thread(f)
+        self._executar_comando(perfil, senha, cmd)
+
+    def rodar_local(self):
+        perfil, senha = self._perfil_valido(), self.v["senha"].get() or None
+        if not perfil:
+            return
+        local = filedialog.askopenfilename(title="Script local (.R ou .py)",
+                                           filetypes=[("Scripts", "*.R *.r *.py"), ("Todos", "*.*")])
+        if not local:
+            return
+        destino = perfil.pasta_remota.rstrip("/") + "/" + Path(local).name
+        try:
+            cmd = ssh.comando_script(destino)
+        except ValueError as e:
+            self.linha(str(e))
+            return
+        def enviar_antes(cli):
+            ssh.enviar(cli, local, destino)
+            self.linha(f"Enviado: {local} -> {destino}")
+        self._executar_comando(perfil, senha, cmd, enviar_antes)
 
     def estado_ts(self):
         def f():
             estado = tailscale.status()
             msg = {
-                "nao_instalado": "Tailscale não instalado. Baixe em https://tailscale.com/download",
+                "nao_instalado": "Tailscale não instalado. Abrindo https://tailscale.com/download",
                 "deslogado": "Tailscale instalado mas deslogado. " + DICA_LOGIN,
                 "parado": "Tailscale parado. " + DICA_LOGIN,
                 "conectado": "Tailscale conectado.",
                 "desconhecido": "Não consegui interpretar o estado do Tailscale.",
             }[estado]
             self.linha(msg)
+            if estado == "nao_instalado":
+                webbrowser.open("https://tailscale.com/download")
+        self._thread(f)
+
+    def entrar_ts(self):
+        chave = simpledialog.askstring("Auth key", "Cole a auth key do Tailscale (tskey-auth-...):", show="*")
+        if not chave:
+            return
+        def f():
+            if not tailscale.caminho():
+                self.linha("Tailscale não instalado. Baixe em https://tailscale.com/download")
+                return
+            try:
+                r = subprocess.run(tailscale.comando_up(chave), capture_output=True, text=True, timeout=60)
+            except subprocess.TimeoutExpired:
+                self.linha("O Tailscale demorou demais para responder (60 s). Tente de novo.")
+                return
+            except OSError as e:
+                self.linha(tailscale.mascarar(f"Não consegui executar o Tailscale: {e}", chave))
+                return
+            saida = tailscale.mascarar((r.stdout or "") + (r.stderr or ""), chave).strip()
+            if saida:
+                self.linha(saida)
+            if r.returncode == 0:
+                self.linha("Tailscale: login concluído.")
+            else:
+                self.linha(f"O Tailscale terminou com código {r.returncode}.")
+                if os.name != "nt":
+                    self.linha("Dica: em Linux pode ser preciso rodar 'sudo tailscale up' num terminal.")
         self._thread(f)
 
     def preparar_remoto(self):
-        perfil, senha = self._perfil_atual(), self.v["senha"].get() or None
+        perfil, senha = self._perfil_valido(), self.v["senha"].get() or None
+        if not perfil:
+            return
         chave = simpledialog.askstring("Auth key", "Cole a auth key do Tailscale (tskey-auth-...):", show="*")
         if not chave:
             return
@@ -247,9 +367,8 @@ class App:
                 + script + "\nExecutar?"):
             return
         def f():
-            _, cli = self._conexao(perfil, senha)
-            codigo = preparar.preparar(cli, pasta, chave, host, self.escrever)
-            cli.close()
+            with self._cliente(perfil, senha) as cli:
+                codigo = preparar.preparar(cli, pasta, chave, host, self.escrever)
             self.linha(f"\n[preparação terminou com código {codigo}]")
         self._thread(f)
 
