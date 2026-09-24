@@ -26,3 +26,11 @@ def test_comando_up_nao_interpola_shell():
     cmd = tailscale.comando_up("tskey-auth-a; rm -rf ~")
     assert cmd[-1] == "--auth-key=tskey-auth-a; rm -rf ~"
     assert isinstance(cmd, list)
+
+
+def test_mascarar_troca_a_chave():
+    assert tailscale.mascarar("erro com tskey-auth-XYZ aqui", "tskey-auth-XYZ") == "erro com ******** aqui"
+
+
+def test_mascarar_chave_vazia_nao_altera():
+    assert tailscale.mascarar("texto", "") == "texto"

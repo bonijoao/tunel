@@ -35,3 +35,7 @@ def status() -> str:
 
 def comando_up(auth_key: str) -> list[str]:
     return [caminho() or "tailscale", "up", f"--auth-key={auth_key}"]
+
+
+def mascarar(texto: str, chave: str) -> str:
+    return texto.replace(chave, "********") if chave else texto
