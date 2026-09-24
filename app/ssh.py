@@ -15,15 +15,31 @@ from app.perfis import Perfil
 _INTERPRETES = {".r": "Rscript", ".py": "python3"}
 
 
-def comando_script(caminho_remoto: str) -> str:
+def _arg_shell(caminho: str) -> str:
+    if caminho == "~":
+        return '"$HOME"'
+    if caminho.startswith("~/"):
+        return '"$HOME"' + shlex.quote(caminho[1:])
+    return shlex.quote(caminho)
+
+
+def _interprete(caminho_remoto: str) -> str:
     ext = posixpath.splitext(caminho_remoto)[1].lower()
     if ext not in _INTERPRETES:
         raise ValueError(f"Extensão não suportada: {ext or '(nenhuma)'}. Use .R ou .py.")
-    if caminho_remoto.startswith("~/"):
-        arg = '"$HOME"' + shlex.quote(caminho_remoto[1:])
-    else:
-        arg = shlex.quote(caminho_remoto)
-    return f"{_INTERPRETES[ext]} {arg}"
+    return _INTERPRETES[ext]
+
+
+def comando_script(caminho_remoto: str) -> str:
+    return f"{_interprete(caminho_remoto)} {_arg_shell(caminho_remoto)}"
+
+
+def comando_script_na_pasta(caminho_remoto: str) -> str:
+    """Roda o script dentro da pasta dele, para que caminhos relativos a dados funcionem."""
+    interprete = _interprete(caminho_remoto)
+    pasta = posixpath.dirname(caminho_remoto) or "."
+    nome = posixpath.basename(caminho_remoto)
+    return f"cd {_arg_shell(pasta)} && {interprete} {shlex.quote('./' + nome)}"
 
 
 def comando_instalar_chave(pub: str) -> str:

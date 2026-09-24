@@ -123,3 +123,29 @@ def test_ler_canal_nao_corrompe_caractere_multibyte_dividido():
     assert ssh.ler_canal(canal, saida.append) == 3
     assert "".join(saida) == "Média São João"
     assert "�" not in "".join(saida)
+
+
+def test_script_na_pasta_absoluto_e_relativo():
+    assert ssh.comando_script_na_pasta("/home/u/dados/a.R") == "cd /home/u/dados && Rscript ./a.R"
+    assert ssh.comando_script_na_pasta("a.py") == "cd . && python3 ./a.py"
+    assert ssh.comando_script_na_pasta("~/a.R") == 'cd "$HOME" && Rscript ./a.R'
+
+
+def test_script_na_pasta_com_espacos_aspas_e_til():
+    cmd = ssh.comando_script_na_pasta("~/meus dados/rel 'x'.py")
+    assert cmd.startswith('cd "$HOME"\'/meus dados\' && python3 ')
+    assert "'./rel '\"'\"'x'\"'\"'.py'" in cmd
+
+
+def test_script_na_pasta_nome_com_hifen_nao_vira_opcao():
+    assert ssh.comando_script_na_pasta("/d/-e.R") == "cd /d && Rscript ./-e.R"
+
+
+def test_script_na_pasta_metacaracteres_ficam_quotados():
+    cmd = ssh.comando_script_na_pasta("/d;rm -rf x/a$(id).py")
+    assert cmd == "cd '/d;rm -rf x' && python3 './a$(id).py'"
+
+
+def test_script_na_pasta_extensao_invalida():
+    with pytest.raises(ValueError, match="Extensão não suportada"):
+        ssh.comando_script_na_pasta("/d/a.txt")
