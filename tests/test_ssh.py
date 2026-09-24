@@ -94,3 +94,31 @@ def test_traduzir_erro_ssh_generico():
 def test_traduzir_erro_runtime():
     msg = ssh.traduzir_erro(RuntimeError("Connection refused"))
     assert "Connection refused" in msg or "remoto" in msg.lower()
+
+
+class _CanalFalso:
+    def __init__(self, pedacos, codigo=0):
+        self.pedacos, self.codigo = list(pedacos), codigo
+        self.status_event = type("E", (), {"wait": lambda s, t: None})()
+
+    def recv_ready(self):
+        return bool(self.pedacos)
+
+    def recv(self, n):
+        return self.pedacos.pop(0)
+
+    def exit_status_ready(self):
+        return not self.pedacos
+
+    def recv_exit_status(self):
+        return self.codigo
+
+
+def test_ler_canal_nao_corrompe_caractere_multibyte_dividido():
+    dados = "Média São João".encode("utf-8")
+    corte = dados.index("é".encode()) + 1  # no meio do caractere de 2 bytes
+    canal = _CanalFalso([dados[:corte], dados[corte:]], codigo=3)
+    saida = []
+    assert ssh.ler_canal(canal, saida.append) == 3
+    assert "".join(saida) == "Média São João"
+    assert "�" not in "".join(saida)

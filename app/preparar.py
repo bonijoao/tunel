@@ -41,12 +41,4 @@ def preparar(cli, pasta, auth_key, hostname, ao_receber) -> int:
     canal.exec_command("bash -s")
     canal.sendall(gerar_script(pasta, auth_key, hostname).encode())
     canal.shutdown_write()
-    while True:
-        if canal.recv_ready():
-            ao_receber(canal.recv(4096).decode(errors="replace"))
-        elif canal.exit_status_ready():
-            while canal.recv_ready():
-                ao_receber(canal.recv(4096).decode(errors="replace"))
-            return canal.recv_exit_status()
-        else:
-            canal.status_event.wait(0.1)
+    return ssh.ler_canal(canal, ao_receber)

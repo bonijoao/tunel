@@ -1,3 +1,4 @@
+import codecs
 import os
 import posixpath
 import shlex
@@ -115,19 +116,33 @@ def baixar(cli, remoto: str, local: str) -> None:
         sftp.close()
 
 
+def ler_canal(canal, ao_receber: Callable[[str], None]) -> int:
+    dec = codecs.getincrementaldecoder("utf-8")(errors="replace")
+
+    def _emitir(dados: bytes) -> None:
+        texto = dec.decode(dados)
+        if texto:
+            ao_receber(texto)
+
+    while True:
+        if canal.recv_ready():
+            _emitir(canal.recv(4096))
+        elif canal.exit_status_ready():
+            while canal.recv_ready():
+                _emitir(canal.recv(4096))
+            resto = dec.decode(b"", final=True)
+            if resto:
+                ao_receber(resto)
+            return canal.recv_exit_status()
+        else:
+            canal.status_event.wait(0.1)
+
+
 def executar(cli, comando: str, ao_receber: Callable[[str], None]) -> int:
     canal = cli.get_transport().open_session()
     canal.set_combine_stderr(True)
     canal.exec_command(comando)
-    while True:
-        if canal.recv_ready():
-            ao_receber(canal.recv(4096).decode(errors="replace"))
-        elif canal.exit_status_ready():
-            while canal.recv_ready():
-                ao_receber(canal.recv(4096).decode(errors="replace"))
-            return canal.recv_exit_status()
-        else:
-            canal.status_event.wait(0.1)
+    return ler_canal(canal, ao_receber)
 
 
 _EMULADORES = (
