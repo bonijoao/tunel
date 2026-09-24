@@ -100,24 +100,32 @@ def validar_nome(nome: str):
     return None
 
 
+def _normalizar(caminho: str) -> str:
+    """normpath que colapsa barras iniciais (POSIX mantém '//' como está, mas no Linux é igual a '/')."""
+    c = posixpath.normpath(caminho)
+    if c.startswith("/"):
+        c = "/" + c.lstrip("/")
+    return c
+
+
 def expandir_remoto(caminho: str, home: str) -> str:
     c = caminho.strip() or "~"
     if c == "~":
         return home
     if c.startswith("~/"):
-        return posixpath.normpath(posixpath.join(home, c[2:]))
+        return _normalizar(posixpath.join(home, c[2:]))
     if not c.startswith("/"):
-        return posixpath.normpath(posixpath.join(home, c))
-    return posixpath.normpath(c)
+        return _normalizar(posixpath.join(home, c))
+    return _normalizar(c)
 
 
 def protegido(caminho: str, home: str, pasta_perfil: str) -> bool:
     """True se apagar `caminho` é proibido: raiz, home, pasta do perfil, ancestrais delas, ou caminho não absoluto."""
-    c = posixpath.normpath(caminho)
+    c = _normalizar(caminho)
     if not c.startswith("/") or c == "/":
         return True
     for ref in (home, pasta_perfil):
-        r = posixpath.normpath(ref)
+        r = _normalizar(ref)
         if r == c or r.startswith(c.rstrip("/") + "/"):
             return True
     return False
@@ -146,13 +154,13 @@ def renomear(sftp, caminho: str, novo_nome: str) -> str:
 
 def mover(sftp, caminhos: list[str], pasta_destino: str):
     """Devolve (movidos, ignorados); ignorados é uma lista de (caminho, motivo)."""
-    dest_dir = posixpath.normpath(pasta_destino)
+    dest_dir = _normalizar(pasta_destino)
     alvo = _existe_remoto(sftp, dest_dir)
     if alvo is None or not stat.S_ISDIR(alvo.st_mode or 0):
         raise OperacaoRecusada(f"A pasta de destino '{dest_dir}' não existe.")
     movidos, ignorados = [], []
     for c in caminhos:
-        c = posixpath.normpath(c)
+        c = _normalizar(c)
         destino = posixpath.join(dest_dir, posixpath.basename(c))
         if dest_dir == c or dest_dir.startswith(c + "/"):
             ignorados.append((c, "não é possível mover uma pasta para dentro dela mesma"))
@@ -193,7 +201,7 @@ def apagar_itens(sftp, caminhos: list[str], home: str, pasta_perfil: str, progre
     for i, c in enumerate(caminhos, 1):
         if progresso:
             progresso(i, len(caminhos), posixpath.basename(c.rstrip("/")))
-        _apagar_rec(sftp, posixpath.normpath(c))
+        _apagar_rec(sftp, _normalizar(c))
 
 
 # ---------- transferência
@@ -228,12 +236,18 @@ def enviar_itens(sftp, locais: list[str], destino_dir: str, resolver, progresso=
         _enviar_um(sftp, origem, posixpath.join(destino_dir, nome), resolver)
 
 
+def _exigir_nome_valido(nome):
+    if validar_nome(nome):
+        raise OperacaoRecusada(f"Nome inválido no PC remoto: {nome!r}")
+
+
 def _baixar_um(sftp, remoto, eh_pasta, destino, resolver):
     if eh_pasta:
         if os.path.exists(destino) and not os.path.isdir(destino):
             raise FileExistsError(f"'{destino}' já existe neste computador e não é uma pasta.")
         os.makedirs(destino, exist_ok=True)
         for a in sftp.listdir_attr(remoto):
+            _exigir_nome_valido(a.filename)
             modo = a.st_mode or 0
             if not (stat.S_ISDIR(modo) or stat.S_ISREG(modo)):
                 continue
@@ -252,6 +266,8 @@ def _baixar_um(sftp, remoto, eh_pasta, destino, resolver):
 
 
 def baixar_itens(sftp, entradas: list[Entrada], destino_dir: str, resolver, progresso=None) -> None:
+    for e in entradas:
+        _exigir_nome_valido(e.nome)
     for i, e in enumerate(entradas, 1):
         if progresso:
             progresso(i, len(entradas), e.nome)

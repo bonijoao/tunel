@@ -64,6 +64,8 @@ def test_expandir_remoto(entrada, esperado):
 @pytest.mark.parametrize("caminho,barrado", [
     ("/", True), ("/home", True), (HOME, True), (HOME + "/", True), (PERFIL, True),
     ("/home/fulano/../..", True), ("relativo/x", True), ("~", True), (".", True),
+    ("//home/fulano", True), ("//home", True), ("//home/fulano/projeto", True), ("///", True),
+    ("/home//fulano", True),
     (PERFIL + "/dados", False), ("/tmp/x", False), (HOME + "/outra", False),
 ])
 def test_protegido(caminho, barrado):
@@ -140,6 +142,15 @@ def test_apagar_tudo_ou_nada_quando_ha_caminho_protegido():
         with pytest.raises(OperacaoRecusada, match="segurança"):
             arquivos.apagar_itens(s, [PERFIL + "/a.txt", barrado, PERFIL + "/b.txt"], HOME, PERFIL)
         assert PERFIL + "/a.txt" in s.caminhos() and PERFIL + "/b.txt" in s.caminhos()
+
+
+def test_apagar_barra_dupla_inicial_nao_burla_protecao():
+    s = FakeSftp()
+    s.arquivo(PERFIL + "/a.txt", b"1")
+    antes = s.caminhos()
+    with pytest.raises(OperacaoRecusada, match="segurança"):
+        arquivos.apagar_itens(s, ["//home/fulano/projeto/a.txt", "//home/fulano"], HOME, PERFIL)
+    assert s.caminhos() == antes
 
 
 # ---------- política de conflito
@@ -284,3 +295,46 @@ def test_baixar_conflitos_e_tipos(tmp_path):
     s.arquivo("/r/solto2.txt", b"x")
     with pytest.raises(FileExistsError, match="é uma pasta"):
         arquivos.baixar_itens(s, _entradas(s, "/r/solto2.txt"), str(destino), _resolver("substituir"))
+
+
+# ---------- nomes remotos maliciosos no download
+class _SftpNomesRuins(FakeSftp):
+    def __init__(self, nomes):
+        super().__init__()
+        self._nomes = nomes
+        self.pasta("/r/proj")
+
+    def listdir_attr(self, caminho):
+        if caminho != "/r/proj":
+            return super().listdir_attr(caminho)
+        import stat as _st
+        import paramiko
+        saida = []
+        for n in self._nomes:
+            a = paramiko.SFTPAttributes()
+            a.filename, a.st_mode, a.st_size = n, _st.S_IFDIR | 0o755, 0
+            saida.append(a)
+        return saida
+
+
+@pytest.mark.parametrize("nome", ["..", "..\evil", "a\x00b", "../x"])
+def test_baixar_recusa_nome_remoto_interno_invalido(tmp_path, nome):
+    destino = tmp_path / "saida"
+    destino.mkdir()
+    antes = sorted(p.name for p in tmp_path.iterdir())
+    s = _SftpNomesRuins([nome])
+    with pytest.raises(OperacaoRecusada, match="Nome inválido"):
+        arquivos.baixar_itens(s, [Entrada("proj", "/r/proj", True)], str(destino), _resolver("substituir"))
+    assert sorted(p.name for p in tmp_path.iterdir()) == antes
+    assert list(destino.rglob("*")) == [] or [p.name for p in destino.iterdir()] == ["proj"]
+
+
+def test_baixar_recusa_nome_de_entrada_de_topo_invalido(tmp_path):
+    destino = tmp_path / "saida"
+    destino.mkdir()
+    s = FakeSftp()
+    s.arquivo("/r/x", b"x")
+    with pytest.raises(OperacaoRecusada, match="Nome inválido"):
+        arquivos.baixar_itens(s, [Entrada("../x", "/r/x", False)], str(destino), _resolver("substituir"))
+    assert not (tmp_path / "x").exists()
+    assert list(destino.iterdir()) == []
