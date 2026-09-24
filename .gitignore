@@ -5,3 +5,5 @@ dist/
 *.spec
 .superpowers/
 docs/superpowers/
+.claude/
+CLAUDE.md
