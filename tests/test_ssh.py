@@ -31,7 +31,7 @@ def test_instalar_chave_quota_e_e_idempotente():
 def test_comando_terminal_com_chave():
     p = Perfil("n", "100.1.1.1", "fulano")
     cmd = ssh.comando_terminal(p, "C:/k/id")
-    assert cmd[-1] == "fulano@100.1.1.1"
+    assert cmd[-2:] == ["--", "fulano@100.1.1.1"]
     assert "-i" in cmd and "C:/k/id" in cmd
 
 

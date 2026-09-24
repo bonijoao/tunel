@@ -1,3 +1,4 @@
+import pytest
 import json
 from app import perfis
 from app.perfis import Perfil
@@ -48,3 +49,18 @@ def test_ler_e_apagar_senha(monkeypatch):
     assert perfis.ler_senha(p) == "x"
     perfis.apagar_senha(p)
     assert perfis.ler_senha(p) is None
+
+
+@pytest.mark.parametrize("login,host", [
+    ("fulano", "100.64.0.1"), ("fu.lano_x@dom-1", "pc-uni.rede.ts.net"), ("u", "fd7a:115c::1"),
+])
+def test_validar_aceita(login, host):
+    assert perfis.validar(perfis.Perfil("n", host, login)) is None
+
+
+@pytest.mark.parametrize("login,host", [
+    ("", "h"), ("u", ""), ("-oProxy", "h"), ("u", "-h"), ("a b", "h"), ("u", "h;rm"),
+    ("u;x", "h"), ("u", "h h"), ("u$(x)", "h"),
+])
+def test_validar_recusa(login, host):
+    assert isinstance(perfis.validar(perfis.Perfil("n", host, login)), str)

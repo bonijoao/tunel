@@ -1,5 +1,6 @@
 import json
 import os
+import re
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
@@ -14,6 +15,21 @@ class Perfil:
     host: str
     login: str
     pasta_remota: str = "~"
+
+
+_LOGIN_OK = re.compile(r"[A-Za-z0-9._@-]+")
+_HOST_OK = re.compile(r"[A-Za-z0-9.:_-]+")
+
+
+def validar(p: Perfil):
+    """Devolve o texto do erro (em português) ou None se login e host são aceitáveis."""
+    if not p.login or not p.host:
+        return "Preencha Host/IP e Login."
+    if p.login.startswith("-") or not _LOGIN_OK.fullmatch(p.login):
+        return "Login inválido: use apenas letras, números e . _ @ - (sem começar com '-')."
+    if p.host.startswith("-") or not _HOST_OK.fullmatch(p.host):
+        return "Host inválido: use apenas letras, números e . : _ - (sem começar com '-')."
+    return None
 
 
 def _base(base, sistema=None):

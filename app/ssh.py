@@ -38,7 +38,7 @@ def comando_terminal(perfil: Perfil, chave) -> list[str]:
     cmd = ["ssh"]
     if chave:
         cmd += ["-i", str(chave)]
-    return cmd + [f"{perfil.login}@{perfil.host}"]
+    return cmd + ["--", f"{perfil.login}@{perfil.host}"]
 
 
 def traduzir_erro(exc: Exception) -> str:
@@ -71,6 +71,8 @@ def garantir_chave(pasta=None):
 
 def conectar(perfil: Perfil, senha=None, chave=None, timeout: int = 10) -> paramiko.SSHClient:
     cli = paramiko.SSHClient()
+    # Escolha deliberada: o tráfego normalmente passa pelo Tailscale/WireGuard, que já autentica
+    # o par; no uso direto pela rede local a chave do servidor é aceita na primeira conexão.
     cli.set_missing_host_key_policy(paramiko.AutoAddPolicy())
     cli.connect(
         perfil.host, username=perfil.login, password=senha,
