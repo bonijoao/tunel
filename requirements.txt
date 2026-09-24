@@ -1,0 +1,4 @@
+paramiko>=3.4
+keyring>=25
+pytest>=8
+pyinstaller>=6
